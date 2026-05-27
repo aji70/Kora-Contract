@@ -108,9 +108,11 @@ impl InvoiceNftContract {
         if invoice.status != InvoiceStatus::Listed {
             return Err(KoraError::InvalidInvoiceStatus);
         }
+        let old_status = "Listed";
         invoice.status = InvoiceStatus::Funded;
         invoice.funded_at = Some(env.ledger().timestamp());
         env.storage().persistent().set(&DataKey::Invoice(invoice_id), &invoice);
+        events::invoice_status_changed(&env, invoice_id, old_status, "Funded");
         Ok(())
     }
 
@@ -121,9 +123,11 @@ impl InvoiceNftContract {
         if invoice.status != InvoiceStatus::Funded {
             return Err(KoraError::InvalidInvoiceStatus);
         }
+        let old_status = "Funded";
         invoice.status = InvoiceStatus::Repaid;
         invoice.repaid_at = Some(env.ledger().timestamp());
         env.storage().persistent().set(&DataKey::Invoice(invoice_id), &invoice);
+        events::invoice_status_changed(&env, invoice_id, old_status, "Repaid");
         Ok(())
     }
 
@@ -138,8 +142,10 @@ impl InvoiceNftContract {
         if env.ledger().timestamp() <= invoice.due_date {
             return Err(KoraError::InvalidInvoiceStatus);
         }
+        let old_status = "Funded";
         invoice.status = InvoiceStatus::Defaulted;
         env.storage().persistent().set(&DataKey::Invoice(invoice_id), &invoice);
+        events::invoice_status_changed(&env, invoice_id, old_status, "Defaulted");
         events::invoice_defaulted(&env, invoice_id, &invoice.sme);
         Ok(())
     }
