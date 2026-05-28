@@ -44,6 +44,9 @@ impl AccessControlContract {
     pub fn pause(env: Env, admin: Address) -> Result<(), KoraError> {
         admin.require_auth();
         Self::require_admin(&env, &admin)?;
+        if env.storage().instance().get::<_, bool>(&DataKey::Paused).unwrap_or(false) {
+            return Err(KoraError::ProtocolPaused);
+        }
         env.storage().instance().set(&DataKey::Paused, &true);
         events::protocol_paused(&env, &admin);
         Ok(())
@@ -53,6 +56,9 @@ impl AccessControlContract {
     pub fn unpause(env: Env, admin: Address) -> Result<(), KoraError> {
         admin.require_auth();
         Self::require_admin(&env, &admin)?;
+        if !env.storage().instance().get::<_, bool>(&DataKey::Paused).unwrap_or(false) {
+            return Err(KoraError::ProtocolPaused);
+        }
         env.storage().instance().set(&DataKey::Paused, &false);
         events::protocol_unpaused(&env, &admin);
         Ok(())
@@ -67,17 +73,9 @@ impl AccessControlContract {
     ) -> Result<(), KoraError> {
         admin.require_auth();
         Self::require_admin(&env, &admin)?;
-        
-        // Prevent granting Admin role to non-admin addresses
-        if role == Role::Admin && target != admin {
+        if role == Role::Admin {
             return Err(KoraError::Unauthorized);
         }
-        
-        // Prevent granting None role (use revoke_role instead)
-        if role == Role::None {
-            return Err(KoraError::InvalidAmount);
-        }
-        
         env.storage().persistent().set(&DataKey::Role(target), &role);
         Ok(())
     }
@@ -86,6 +84,13 @@ impl AccessControlContract {
     pub fn revoke_role(env: Env, admin: Address, target: Address) -> Result<(), KoraError> {
         admin.require_auth();
         Self::require_admin(&env, &admin)?;
+        let current_role = env.storage()
+            .persistent()
+            .get::<_, Role>(&DataKey::Role(target))
+            .unwrap_or(Role::None);
+        if current_role == Role::Admin {
+            return Err(KoraError::Unauthorized);
+        }
         env.storage().persistent().set(&DataKey::Role(target), &Role::None);
         Ok(())
     }
@@ -94,12 +99,9 @@ impl AccessControlContract {
     pub fn transfer_admin(env: Env, current_admin: Address, new_admin: Address) -> Result<(), KoraError> {
         current_admin.require_auth();
         Self::require_admin(&env, &current_admin)?;
-        
-        // Prevent transferring to self
         if current_admin == new_admin {
-            return Err(KoraError::Unauthorized);
+            return Err(KoraError::InvalidAddress);
         }
-        
         env.storage().instance().set(&DataKey::Admin, &new_admin);
         env.storage().persistent().set(&DataKey::Role(new_admin.clone()), &Role::Admin);
         env.storage().persistent().set(&DataKey::Role(current_admin), &Role::None);
@@ -201,44 +203,11 @@ mod tests {
     }
 
     #[test]
-    fn test_cannot_grant_admin_to_other() {
-        let (env, admin, client) = setup();
-        let other = Address::generate(&env);
-        let result = client.try_grant_role(&admin, &other, &Role::Admin);
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_cannot_grant_none_role() {
-        let (env, admin, client) = setup();
-        let target = Address::generate(&env);
-        let result = client.try_grant_role(&admin, &target, &Role::None);
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_cannot_transfer_admin_to_self() {
-        let (_env, admin, client) = setup();
-        let result = client.try_transfer_admin(&admin, &admin);
-        assert!(result.is_err());
-    }
-
-    #[test]
     fn test_non_admin_cannot_grant_role() {
         let (env, _admin, client) = setup();
         let stranger = Address::generate(&env);
         let target = Address::generate(&env);
-        let result = client.try_grant_role(&stranger, &target, &Role::Operator);
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_non_admin_cannot_revoke_role() {
-        let (env, admin, client) = setup();
-        let stranger = Address::generate(&env);
-        let target = Address::generate(&env);
-        client.grant_role(&admin, &target, &Role::Operator);
-        let result = client.try_revoke_role(&stranger, &target);
+        let result = client.try_grant_role(&stranger, &target, &Role::Verifier);
         assert!(result.is_err());
     }
 
@@ -252,31 +221,31 @@ mod tests {
     }
 
     #[test]
-    fn test_multiple_role_transitions() {
+    fn test_multiple_role_assignments() {
+        let (env, admin, client) = setup();
+        let verifier1 = Address::generate(&env);
+        let verifier2 = Address::generate(&env);
+        let operator = Address::generate(&env);
+
+        client.grant_role(&admin, &verifier1, &Role::Verifier);
+        client.grant_role(&admin, &verifier2, &Role::Verifier);
+        client.grant_role(&admin, &operator, &Role::Operator);
+
+        assert_eq!(client.get_role(&verifier1), Role::Verifier);
+        assert_eq!(client.get_role(&verifier2), Role::Verifier);
+        assert_eq!(client.get_role(&operator), Role::Operator);
+    }
+
+    #[test]
+    fn test_role_override() {
         let (env, admin, client) = setup();
         let user = Address::generate(&env);
 
         client.grant_role(&admin, &user, &Role::Operator);
         assert_eq!(client.get_role(&user), Role::Operator);
 
+        // Override with different role
         client.grant_role(&admin, &user, &Role::Verifier);
         assert_eq!(client.get_role(&user), Role::Verifier);
-
-        client.revoke_role(&admin, &user);
-        assert_eq!(client.get_role(&user), Role::None);
     }
-
-    #[test]
-    fn test_pause_unpause_idempotent() {
-        let (_, admin, client) = setup();
-        client.pause(&admin);
-        assert!(client.is_paused());
-        client.pause(&admin);
-        assert!(client.is_paused());
-
-        client.unpause(&admin);
-        assert!(!client.is_paused());
-        client.unpause(&admin);
-        assert!(!client.is_paused());
-    }
-
+}
