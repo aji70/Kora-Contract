@@ -58,8 +58,6 @@ pub fn yield_distributed(env: &Env, invoice_id: u64, investor: &Address, yield_a
 
 // ── Marketplace Events ──────────────────────────────────────────────────────
 
-// ── Marketplace Events ────────────────────────────────────────────────────────
-
 pub fn listing_cancelled(env: &Env, invoice_id: u64, seller: &Address) {
     emit(env, symbol_short!("LST_CXL"), (invoice_id, seller.clone(), env.ledger().timestamp()));
 }
@@ -90,6 +88,10 @@ pub fn protocol_unpaused(env: &Env, by: &Address) {
 
 pub fn fee_withdrawn(env: &Env, token: &Address, amount: i128) {
     emit(env, symbol_short!("FEE_WTH"), (token.clone(), amount));
+}
+
+pub fn token_whitelisted(env: &Env, token: &Address) {
+    emit(env, symbol_short!("TOK_WL"), token.clone());
 }
 
 pub fn admin_transferred(env: &Env, new_admin: &Address) {

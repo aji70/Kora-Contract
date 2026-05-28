@@ -11,7 +11,7 @@ pub enum GuardKey {
 /// Acquire a reentrancy guard. Must be called at the start of protected functions.
 pub fn acquire_guard(env: &Env) -> Result<(), KoraError> {
     if env.storage().instance().has(&GuardKey::ReentrancyGuard) {
-        return Err(KoraError::Unauthorized);
+        return Err(KoraError::Reentrancy);
     }
     env.storage().instance().set(&GuardKey::ReentrancyGuard, &true);
     Ok(())
@@ -20,24 +20,6 @@ pub fn acquire_guard(env: &Env) -> Result<(), KoraError> {
 /// Release the reentrancy guard. Must be called before returning from protected functions.
 pub fn release_guard(env: &Env) {
     env.storage().instance().remove(&GuardKey::ReentrancyGuard);
-}
-
-/// RAII-style guard that automatically releases on drop.
-pub struct ReentrancyGuard<'a> {
-    env: &'a Env,
-}
-
-impl<'a> ReentrancyGuard<'a> {
-    pub fn new(env: &'a Env) -> Result<Self, KoraError> {
-        acquire_guard(env)?;
-        Ok(ReentrancyGuard { env })
-    }
-}
-
-impl<'a> Drop for ReentrancyGuard<'a> {
-    fn drop(&mut self) {
-        release_guard(self.env);
-    }
 }
 
 #[cfg(test)]
@@ -55,12 +37,20 @@ mod tests {
     }
 
     #[test]
-    fn test_raii_guard() {
+    fn test_double_acquire_returns_reentrancy_error() {
         let env = Env::default();
-        {
-            let _guard = ReentrancyGuard::new(&env).unwrap();
-            assert!(ReentrancyGuard::new(&env).is_err());
-        }
-        assert!(ReentrancyGuard::new(&env).is_ok());
+        acquire_guard(&env).unwrap();
+        let err = acquire_guard(&env).unwrap_err();
+        assert_eq!(err, KoraError::Reentrancy);
+        release_guard(&env);
+    }
+
+    #[test]
+    fn test_release_without_acquire_is_safe() {
+        let env = Env::default();
+        // Should not panic
+        release_guard(&env);
+        assert!(acquire_guard(&env).is_ok());
+        release_guard(&env);
     }
 }
