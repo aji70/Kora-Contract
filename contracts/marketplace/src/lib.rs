@@ -235,8 +235,7 @@ mod tests {
     use super::*;
     use soroban_sdk::{testutils::Address as _, Env};
 
-    #[test]
-    fn test_cancel_listing_unauthorized() {
+    fn setup() -> (Env, Address, Address, Address, Address, MarketplaceContractClient<'static>) {
         let env = Env::default();
         env.mock_all_auths();
         let contract_id = env.register_contract(None, MarketplaceContract);
@@ -247,10 +246,166 @@ mod tests {
         let pool = Address::generate(&env);
         let treasury = Address::generate(&env);
         client.initialize(&admin, &nft, &pool, &treasury, &50u32);
+        (env, admin, nft, pool, treasury, client)
+    }
+
+    #[test]
+    fn test_cancel_listing_unauthorized() {
+        let (env, _admin, _nft, _pool, _treasury, client) = setup();
 
         // Listing doesn't exist — should return ListingNotFound
         let stranger = Address::generate(&env);
         let result = client.try_cancel_listing(&stranger, &999u64);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_list_invoice_asking_price_must_be_less_than_face_value() {
+        let (env, _admin, _nft, _pool, _treasury, client) = setup();
+        let seller = Address::generate(&env);
+        let token = Address::generate(&env);
+
+        // Whitelist token first
+        let admin = Address::generate(&env);
+        client.whitelist_token(&admin, &token);
+
+        // Try to list with asking_price >= face_value
+        let result = client.try_list_invoice(
+            &seller,
+            &1u64,
+            10_000_000_000i128,
+            10_000_000_000i128, // Same as asking price
+            &token,
+            1_800_000_000u64,
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_list_invoice_future_deadline_required() {
+        let (env, _admin, _nft, _pool, _treasury, client) = setup();
+        let seller = Address::generate(&env);
+        let token = Address::generate(&env);
+
+        let admin = Address::generate(&env);
+        client.whitelist_token(&admin, &token);
+
+        // Try to list with past deadline
+        let past_timestamp = env.ledger().timestamp() - 1000u64;
+        let result = client.try_list_invoice(
+            &seller,
+            &1u64,
+            9_500_000_000i128,
+            10_000_000_000i128,
+            &token,
+            past_timestamp,
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_fund_invoice_exceeds_target() {
+        let (env, _admin, _nft, _pool, _treasury, client) = setup();
+        let seller = Address::generate(&env);
+        let investor = Address::generate(&env);
+        let token = Address::generate(&env);
+
+        let admin = Address::generate(&env);
+        client.whitelist_token(&admin, &token);
+
+        let asking_price = 10_000_000_000i128;
+        let face_value = 10_000_000_000i128;
+        let deadline = env.ledger().timestamp() + 1_000_000u64;
+
+        client.list_invoice(&seller, &1u64, asking_price, face_value, &token, deadline);
+
+        // Try to fund more than asking price
+        let result = client.try_fund_invoice(&investor, &1u64, &(asking_price + 1));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_fund_invoice_after_deadline() {
+        let (env, _admin, _nft, _pool, _treasury, client) = setup();
+        let seller = Address::generate(&env);
+        let investor = Address::generate(&env);
+        let token = Address::generate(&env);
+
+        let admin = Address::generate(&env);
+        client.whitelist_token(&admin, &token);
+
+        let asking_price = 10_000_000_000i128;
+        let face_value = 10_000_000_000i128;
+        let deadline = env.ledger().timestamp() + 100u64;
+
+        client.list_invoice(&seller, &1u64, asking_price, face_value, &token, deadline);
+
+        // Advance time past deadline
+        env.ledger().set_timestamp(deadline + 1);
+
+        // Try to fund after deadline
+        let result = client.try_fund_invoice(&investor, &1u64, &5_000_000_000i128);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_whitelist_token_non_admin() {
+        let (env, _admin, _nft, _pool, _treasury, client) = setup();
+        let stranger = Address::generate(&env);
+        let token = Address::generate(&env);
+
+        let result = client.try_whitelist_token(&stranger, &token);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_list_invoice_non_whitelisted_token() {
+        let (env, _admin, _nft, _pool, _treasury, client) = setup();
+        let seller = Address::generate(&env);
+        let token = Address::generate(&env);
+
+        let asking_price = 9_500_000_000i128;
+        let face_value = 10_000_000_000i128;
+        let deadline = env.ledger().timestamp() + 1_000_000u64;
+
+        // Try to list with non-whitelisted token
+        let result = client.try_list_invoice(&seller, &1u64, asking_price, face_value, &token, deadline);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_list_invoice_zero_amount() {
+        let (env, _admin, _nft, _pool, _treasury, client) = setup();
+        let seller = Address::generate(&env);
+        let token = Address::generate(&env);
+
+        let admin = Address::generate(&env);
+        client.whitelist_token(&admin, &token);
+
+        let deadline = env.ledger().timestamp() + 1_000_000u64;
+
+        // Try to list with zero asking price
+        let result = client.try_list_invoice(&seller, &1u64, &0i128, &10_000_000_000i128, &token, deadline);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_cancel_listing_already_cancelled() {
+        let (env, admin, _nft, _pool, _treasury, client) = setup();
+        let seller = Address::generate(&env);
+        let token = Address::generate(&env);
+
+        client.whitelist_token(&admin, &token);
+
+        let asking_price = 9_500_000_000i128;
+        let face_value = 10_000_000_000i128;
+        let deadline = env.ledger().timestamp() + 1_000_000u64;
+
+        client.list_invoice(&seller, &1u64, asking_price, face_value, &token, deadline);
+        client.cancel_listing(&seller, &1u64);
+
+        // Try to cancel again
+        let result = client.try_cancel_listing(&seller, &1u64);
         assert!(result.is_err());
     }
 }

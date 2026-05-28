@@ -91,3 +91,7 @@ pub fn protocol_unpaused(env: &Env, by: &Address) {
 pub fn fee_withdrawn(env: &Env, token: &Address, amount: i128) {
     emit(env, symbol_short!("FEE_WTH"), (token.clone(), amount));
 }
+
+pub fn admin_transferred(env: &Env, new_admin: &Address) {
+    emit(env, symbol_short!("ADM_TRF"), new_admin.clone());
+}

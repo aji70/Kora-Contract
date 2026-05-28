@@ -105,6 +105,7 @@ impl AccessControlContract {
         env.storage().instance().set(&DataKey::Admin, &new_admin);
         env.storage().persistent().set(&DataKey::Role(new_admin.clone()), &Role::Admin);
         env.storage().persistent().set(&DataKey::Role(current_admin), &Role::None);
+        events::admin_transferred(&env, &new_admin);
         Ok(())
     }
 
