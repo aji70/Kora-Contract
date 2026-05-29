@@ -88,6 +88,33 @@ pub fn fee_withdrawn(env: &Env, token: &Address, amount: i128) {
     emit(env, symbol_short!("FEE_WTH"), (token.clone(), amount));
 }
 
+/// Emitted when the full token balance is drained via emergency_withdraw.
+pub fn emergency_withdrawn(env: &Env, by: &Address, token: &Address, amount: i128) {
+    emit(
+        env,
+        symbol_short!("EMRG_WTH"),
+        (by.clone(), token.clone(), amount),
+    );
+}
+
+/// Emitted when the protocol fee rate is updated.
+pub fn fee_rate_updated(env: &Env, by: &Address, old_bps: u32, new_bps: u32) {
+    emit(
+        env,
+        symbol_short!("FEE_UPD"),
+        (by.clone(), old_bps, new_bps),
+    );
+}
+
+/// Emitted when the treasury contract is initialized.
+pub fn treasury_initialized(env: &Env, admin: &Address, fee_bps: u32) {
+    emit(
+        env,
+        symbol_short!("TRES_INT"),
+        (admin.clone(), fee_bps),
+    );
+}
+
 // ── Protocol / Admin Events ───────────────────────────────────────────────────
 
 pub fn protocol_paused(env: &Env, by: &Address) {

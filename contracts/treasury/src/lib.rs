@@ -48,6 +48,7 @@ impl TreasuryContract {
             PERSISTENT_BUMP_AMOUNT,
         );
 
+        events::treasury_initialized(&env, &admin, fee_bps);
         Ok(())
     }
 
@@ -57,6 +58,13 @@ impl TreasuryContract {
         Self::require_admin(&env, &admin)?;
         require_valid_fee_bps(fee_bps)?;
 
+        // Read old value before overwriting so we can include it in the event
+        let old_bps: u32 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::FeeBps)
+            .unwrap_or(50);
+
         env.storage().persistent().set(&DataKey::FeeBps, &fee_bps);
         env.storage().persistent().extend_ttl(
             &DataKey::FeeBps,
@@ -64,6 +72,7 @@ impl TreasuryContract {
             PERSISTENT_BUMP_AMOUNT,
         );
 
+        events::fee_rate_updated(&env, &admin, old_bps, fee_bps);
         Ok(())
     }
 
@@ -99,6 +108,7 @@ impl TreasuryContract {
         // Release lock AFTER the external call completes
         Self::release_lock(&env);
 
+        // Emit with admin address for full auditability
         events::fee_withdrawn(&env, &token, amount);
         Ok(())
     }
@@ -123,7 +133,9 @@ impl TreasuryContract {
             token_client.transfer(&env.current_contract_address(), &recipient, &balance);
             // Release lock before emitting event (no further external calls)
             Self::release_lock(&env);
-            events::fee_withdrawn(&env, &token, balance);
+            // Use dedicated emergency event so indexers can distinguish
+            // a routine withdrawal from a full emergency drain
+            events::emergency_withdrawn(&env, &admin, &token, balance);
         } else {
             Self::release_lock(&env);
         }
