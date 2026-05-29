@@ -530,3 +530,593 @@ mod tests {
         assert_eq!(client.get_role(&unknown), Role::None);
     }
 }
+// ── Tests ─────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use kora_shared::errors::KoraError;
+    use soroban_sdk::{
+        testutils::{Address as _, AuthorizedFunction, AuthorizedInvocation},
+        Address, Env, IntoVal, Symbol,
+    };
+
+    // ── Helpers ───────────────────────────────────────────────────────────────
+
+    /// Deploy and initialize with mock_all_auths for convenience.
+    fn setup() -> (Env, Address, AccessControlContractClient<'static>) {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register_contract(None, AccessControlContract);
+        let client = AccessControlContractClient::new(&env, &contract_id);
+        let admin = Address::generate(&env);
+        client.initialize(&admin);
+        (env, admin, client)
+    }
+
+    /// Deploy without initializing (for pre-init tests).
+    fn deploy_uninit() -> (Env, AccessControlContractClient<'static>) {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register_contract(None, AccessControlContract);
+        let client = AccessControlContractClient::new(&env, &contract_id);
+        (env, client)
+    }
+
+    // ── initialize ────────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_initialize_success() {
+        let (env, client) = deploy_uninit();
+        let admin = Address::generate(&env);
+        assert!(client.try_initialize(&admin).is_ok());
+        // Admin is stored correctly
+        assert_eq!(client.get_admin(), admin);
+        // Admin role is set
+        assert_eq!(client.get_role(&admin), Role::Admin);
+        // Protocol starts unpaused
+        assert!(!client.is_paused());
+    }
+
+    #[test]
+    fn test_initialize_already_initialized_returns_correct_error() {
+        let (_, admin, client) = setup();
+        let result = client.try_initialize(&admin);
+        assert_eq!(
+            result.unwrap_err().unwrap(),
+            KoraError::AlreadyInitialized
+        );
+    }
+
+    #[test]
+    fn test_initialize_second_admin_ignored() {
+        // A second initialize with a different admin must fail — original admin unchanged
+        let (env, admin, client) = setup();
+        let attacker = Address::generate(&env);
+        let _ = client.try_initialize(&attacker);
+        assert_eq!(client.get_admin(), admin);
+    }
+
+    // ── pause ─────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_pause_sets_paused_flag() {
+        let (_, admin, client) = setup();
+        assert!(!client.is_paused());
+        client.pause(&admin);
+        assert!(client.is_paused());
+    }
+
+    #[test]
+    fn test_pause_requires_admin_auth() {
+        let (env, admin, client) = setup();
+        // Use mock_auths to verify the exact auth requirement
+        env.mock_auths(&[soroban_sdk::testutils::MockAuth {
+            address: &admin,
+            invoke: &soroban_sdk::testutils::MockAuthInvoke {
+                contract: &client.address,
+                fn_name: "pause",
+                args: (&admin,).into_val(&env),
+                sub_invokes: &[],
+            },
+        }]);
+        assert!(client.try_pause(&admin).is_ok());
+    }
+
+    #[test]
+    fn test_pause_non_admin_returns_not_admin() {
+        let (env, _, client) = setup();
+        let stranger = Address::generate(&env);
+        let result = client.try_pause(&stranger);
+        assert_eq!(result.unwrap_err().unwrap(), KoraError::NotAdmin);
+    }
+
+    #[test]
+    fn test_pause_already_paused_returns_correct_error() {
+        let (_, admin, client) = setup();
+        client.pause(&admin);
+        let result = client.try_pause(&admin);
+        assert_eq!(result.unwrap_err().unwrap(), KoraError::AlreadyPaused);
+    }
+
+    #[test]
+    fn test_pause_state_unchanged_after_double_pause() {
+        // After a failed second pause, the contract must still be paused
+        let (_, admin, client) = setup();
+        client.pause(&admin);
+        let _ = client.try_pause(&admin);
+        assert!(client.is_paused());
+    }
+
+    // ── unpause ───────────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_unpause_clears_paused_flag() {
+        let (_, admin, client) = setup();
+        client.pause(&admin);
+        client.unpause(&admin);
+        assert!(!client.is_paused());
+    }
+
+    #[test]
+    fn test_unpause_requires_admin_auth() {
+        let (env, admin, client) = setup();
+        client.pause(&admin);
+        env.mock_auths(&[soroban_sdk::testutils::MockAuth {
+            address: &admin,
+            invoke: &soroban_sdk::testutils::MockAuthInvoke {
+                contract: &client.address,
+                fn_name: "unpause",
+                args: (&admin,).into_val(&env),
+                sub_invokes: &[],
+            },
+        }]);
+        assert!(client.try_unpause(&admin).is_ok());
+    }
+
+    #[test]
+    fn test_unpause_non_admin_returns_not_admin() {
+        let (env, admin, client) = setup();
+        client.pause(&admin);
+        let stranger = Address::generate(&env);
+        let result = client.try_unpause(&stranger);
+        assert_eq!(result.unwrap_err().unwrap(), KoraError::NotAdmin);
+    }
+
+    #[test]
+    fn test_unpause_when_not_paused_returns_correct_error() {
+        let (_, admin, client) = setup();
+        let result = client.try_unpause(&admin);
+        assert_eq!(result.unwrap_err().unwrap(), KoraError::NotPaused);
+    }
+
+    #[test]
+    fn test_unpause_state_unchanged_after_failed_unpause() {
+        // After a failed unpause (not paused), state must still be unpaused
+        let (_, admin, client) = setup();
+        let _ = client.try_unpause(&admin);
+        assert!(!client.is_paused());
+    }
+
+    #[test]
+    fn test_pause_unpause_cycle_multiple_times() {
+        let (_, admin, client) = setup();
+        for _ in 0..5 {
+            client.pause(&admin);
+            assert!(client.is_paused());
+            client.unpause(&admin);
+            assert!(!client.is_paused());
+        }
+    }
+
+    // ── grant_role ────────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_grant_role_operator_success() {
+        let (env, admin, client) = setup();
+        let operator = Address::generate(&env);
+        client.grant_role(&admin, &operator, &Role::Operator);
+        assert_eq!(client.get_role(&operator), Role::Operator);
+    }
+
+    #[test]
+    fn test_grant_role_verifier_success() {
+        let (env, admin, client) = setup();
+        let verifier = Address::generate(&env);
+        client.grant_role(&admin, &verifier, &Role::Verifier);
+        assert_eq!(client.get_role(&verifier), Role::Verifier);
+    }
+
+    #[test]
+    fn test_grant_role_requires_admin_auth() {
+        let (env, admin, client) = setup();
+        let target = Address::generate(&env);
+        env.mock_auths(&[soroban_sdk::testutils::MockAuth {
+            address: &admin,
+            invoke: &soroban_sdk::testutils::MockAuthInvoke {
+                contract: &client.address,
+                fn_name: "grant_role",
+                args: (&admin, &target, &Role::Verifier).into_val(&env),
+                sub_invokes: &[],
+            },
+        }]);
+        assert!(client.try_grant_role(&admin, &target, &Role::Verifier).is_ok());
+    }
+
+    #[test]
+    fn test_grant_role_non_admin_returns_not_admin() {
+        let (env, _, client) = setup();
+        let stranger = Address::generate(&env);
+        let target = Address::generate(&env);
+        let result = client.try_grant_role(&stranger, &target, &Role::Verifier);
+        assert_eq!(result.unwrap_err().unwrap(), KoraError::NotAdmin);
+    }
+
+    #[test]
+    fn test_grant_role_admin_variant_returns_unauthorized() {
+        let (env, admin, client) = setup();
+        let target = Address::generate(&env);
+        let result = client.try_grant_role(&admin, &target, &Role::Admin);
+        assert_eq!(result.unwrap_err().unwrap(), KoraError::Unauthorized);
+    }
+
+    #[test]
+    fn test_grant_role_none_variant_returns_unauthorized() {
+        let (env, admin, client) = setup();
+        let target = Address::generate(&env);
+        let result = client.try_grant_role(&admin, &target, &Role::None);
+        assert_eq!(result.unwrap_err().unwrap(), KoraError::Unauthorized);
+    }
+
+    #[test]
+    fn test_grant_role_to_self_returns_unauthorized() {
+        let (_, admin, client) = setup();
+        let result = client.try_grant_role(&admin, &admin, &Role::Operator);
+        assert_eq!(result.unwrap_err().unwrap(), KoraError::Unauthorized);
+    }
+
+    #[test]
+    fn test_grant_role_state_unchanged_after_failed_grant() {
+        // After a rejected grant, the target must still have no role
+        let (env, admin, client) = setup();
+        let target = Address::generate(&env);
+        let _ = client.try_grant_role(&admin, &target, &Role::Admin);
+        assert_eq!(client.get_role(&target), Role::None);
+    }
+
+    #[test]
+    fn test_grant_role_override_operator_to_verifier() {
+        let (env, admin, client) = setup();
+        let user = Address::generate(&env);
+        client.grant_role(&admin, &user, &Role::Operator);
+        client.grant_role(&admin, &user, &Role::Verifier);
+        assert_eq!(client.get_role(&user), Role::Verifier);
+    }
+
+    #[test]
+    fn test_grant_role_override_verifier_to_operator() {
+        let (env, admin, client) = setup();
+        let user = Address::generate(&env);
+        client.grant_role(&admin, &user, &Role::Verifier);
+        client.grant_role(&admin, &user, &Role::Operator);
+        assert_eq!(client.get_role(&user), Role::Operator);
+    }
+
+    #[test]
+    fn test_grant_role_same_role_twice_idempotent() {
+        let (env, admin, client) = setup();
+        let user = Address::generate(&env);
+        client.grant_role(&admin, &user, &Role::Verifier);
+        client.grant_role(&admin, &user, &Role::Verifier);
+        assert_eq!(client.get_role(&user), Role::Verifier);
+    }
+
+    #[test]
+    fn test_grant_role_multiple_users_independent() {
+        let (env, admin, client) = setup();
+        let v1 = Address::generate(&env);
+        let v2 = Address::generate(&env);
+        let op = Address::generate(&env);
+        client.grant_role(&admin, &v1, &Role::Verifier);
+        client.grant_role(&admin, &v2, &Role::Verifier);
+        client.grant_role(&admin, &op, &Role::Operator);
+        assert_eq!(client.get_role(&v1), Role::Verifier);
+        assert_eq!(client.get_role(&v2), Role::Verifier);
+        assert_eq!(client.get_role(&op), Role::Operator);
+        // Revoking one does not affect others
+        client.revoke_role(&admin, &v1);
+        assert_eq!(client.get_role(&v1), Role::None);
+        assert_eq!(client.get_role(&v2), Role::Verifier);
+    }
+
+    // ── revoke_role ───────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_revoke_role_success() {
+        let (env, admin, client) = setup();
+        let operator = Address::generate(&env);
+        client.grant_role(&admin, &operator, &Role::Operator);
+        client.revoke_role(&admin, &operator);
+        assert_eq!(client.get_role(&operator), Role::None);
+    }
+
+    #[test]
+    fn test_revoke_role_requires_admin_auth() {
+        let (env, admin, client) = setup();
+        let target = Address::generate(&env);
+        client.grant_role(&admin, &target, &Role::Operator);
+        env.mock_auths(&[soroban_sdk::testutils::MockAuth {
+            address: &admin,
+            invoke: &soroban_sdk::testutils::MockAuthInvoke {
+                contract: &client.address,
+                fn_name: "revoke_role",
+                args: (&admin, &target).into_val(&env),
+                sub_invokes: &[],
+            },
+        }]);
+        assert!(client.try_revoke_role(&admin, &target).is_ok());
+    }
+
+    #[test]
+    fn test_revoke_role_non_admin_returns_not_admin() {
+        let (env, admin, client) = setup();
+        let operator = Address::generate(&env);
+        let stranger = Address::generate(&env);
+        client.grant_role(&admin, &operator, &Role::Operator);
+        let result = client.try_revoke_role(&stranger, &operator);
+        assert_eq!(result.unwrap_err().unwrap(), KoraError::NotAdmin);
+    }
+
+    #[test]
+    fn test_revoke_role_admin_returns_unauthorized() {
+        let (_, admin, client) = setup();
+        let result = client.try_revoke_role(&admin, &admin);
+        assert_eq!(result.unwrap_err().unwrap(), KoraError::Unauthorized);
+    }
+
+    #[test]
+    fn test_revoke_role_not_assigned_returns_correct_error() {
+        let (env, admin, client) = setup();
+        let stranger = Address::generate(&env);
+        let result = client.try_revoke_role(&admin, &stranger);
+        assert_eq!(result.unwrap_err().unwrap(), KoraError::RoleNotAssigned);
+    }
+
+    #[test]
+    fn test_revoke_role_state_unchanged_after_failed_revoke() {
+        // After a failed revoke (no role), target still has no role
+        let (env, admin, client) = setup();
+        let stranger = Address::generate(&env);
+        let _ = client.try_revoke_role(&admin, &stranger);
+        assert_eq!(client.get_role(&stranger), Role::None);
+    }
+
+    #[test]
+    fn test_revoke_role_twice_fails_second_time() {
+        let (env, admin, client) = setup();
+        let user = Address::generate(&env);
+        client.grant_role(&admin, &user, &Role::Verifier);
+        client.revoke_role(&admin, &user);
+        // Second revoke must fail — role is already gone
+        let result = client.try_revoke_role(&admin, &user);
+        assert_eq!(result.unwrap_err().unwrap(), KoraError::RoleNotAssigned);
+    }
+
+    #[test]
+    fn test_revoke_then_re_grant() {
+        let (env, admin, client) = setup();
+        let user = Address::generate(&env);
+        client.grant_role(&admin, &user, &Role::Verifier);
+        client.revoke_role(&admin, &user);
+        client.grant_role(&admin, &user, &Role::Operator);
+        assert_eq!(client.get_role(&user), Role::Operator);
+    }
+
+    // ── transfer_admin ────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_transfer_admin_success() {
+        let (env, admin, client) = setup();
+        let new_admin = Address::generate(&env);
+        client.transfer_admin(&admin, &new_admin);
+        assert_eq!(client.get_admin(), new_admin);
+        assert_eq!(client.get_role(&new_admin), Role::Admin);
+        assert_eq!(client.get_role(&admin), Role::None);
+    }
+
+    #[test]
+    fn test_transfer_admin_requires_current_admin_auth() {
+        let (env, admin, client) = setup();
+        let new_admin = Address::generate(&env);
+        env.mock_auths(&[soroban_sdk::testutils::MockAuth {
+            address: &admin,
+            invoke: &soroban_sdk::testutils::MockAuthInvoke {
+                contract: &client.address,
+                fn_name: "transfer_admin",
+                args: (&admin, &new_admin).into_val(&env),
+                sub_invokes: &[],
+            },
+        }]);
+        assert!(client.try_transfer_admin(&admin, &new_admin).is_ok());
+    }
+
+    #[test]
+    fn test_transfer_admin_non_admin_returns_not_admin() {
+        let (env, _, client) = setup();
+        let stranger = Address::generate(&env);
+        let new_admin = Address::generate(&env);
+        let result = client.try_transfer_admin(&stranger, &new_admin);
+        assert_eq!(result.unwrap_err().unwrap(), KoraError::NotAdmin);
+    }
+
+    #[test]
+    fn test_transfer_admin_to_self_returns_invalid_address() {
+        let (_, admin, client) = setup();
+        let result = client.try_transfer_admin(&admin, &admin);
+        assert_eq!(result.unwrap_err().unwrap(), KoraError::InvalidAddress);
+    }
+
+    #[test]
+    fn test_transfer_admin_to_operator_returns_unauthorized() {
+        let (env, admin, client) = setup();
+        let operator = Address::generate(&env);
+        client.grant_role(&admin, &operator, &Role::Operator);
+        let result = client.try_transfer_admin(&admin, &operator);
+        assert_eq!(result.unwrap_err().unwrap(), KoraError::Unauthorized);
+    }
+
+    #[test]
+    fn test_transfer_admin_to_verifier_returns_unauthorized() {
+        let (env, admin, client) = setup();
+        let verifier = Address::generate(&env);
+        client.grant_role(&admin, &verifier, &Role::Verifier);
+        let result = client.try_transfer_admin(&admin, &verifier);
+        assert_eq!(result.unwrap_err().unwrap(), KoraError::Unauthorized);
+    }
+
+    #[test]
+    fn test_transfer_admin_state_unchanged_after_failed_transfer() {
+        // After a rejected transfer, original admin must still be admin
+        let (env, admin, client) = setup();
+        let _ = client.try_transfer_admin(&admin, &admin);
+        assert_eq!(client.get_admin(), admin);
+        assert_eq!(client.get_role(&admin), Role::Admin);
+    }
+
+    #[test]
+    fn test_transfer_admin_old_admin_loses_all_privileges() {
+        let (env, admin, client) = setup();
+        let new_admin = Address::generate(&env);
+        client.transfer_admin(&admin, &new_admin);
+        // Old admin cannot pause
+        assert!(client.try_pause(&admin).is_err());
+        // Old admin cannot grant roles
+        let target = Address::generate(&env);
+        assert!(client.try_grant_role(&admin, &target, &Role::Verifier).is_err());
+        // Old admin cannot transfer admin again
+        assert!(client.try_transfer_admin(&admin, &target).is_err());
+    }
+
+    #[test]
+    fn test_transfer_admin_new_admin_has_full_privileges() {
+        let (env, admin, client) = setup();
+        let new_admin = Address::generate(&env);
+        client.transfer_admin(&admin, &new_admin);
+        // New admin can pause
+        client.pause(&new_admin);
+        assert!(client.is_paused());
+        // New admin can unpause
+        client.unpause(&new_admin);
+        // New admin can grant roles
+        let target = Address::generate(&env);
+        client.grant_role(&new_admin, &target, &Role::Verifier);
+        assert_eq!(client.get_role(&target), Role::Verifier);
+    }
+
+    #[test]
+    fn test_transfer_admin_chain_a_to_b_to_c() {
+        let (env, admin_a, client) = setup();
+        let admin_b = Address::generate(&env);
+        let admin_c = Address::generate(&env);
+        client.transfer_admin(&admin_a, &admin_b);
+        assert_eq!(client.get_admin(), admin_b);
+        client.transfer_admin(&admin_b, &admin_c);
+        assert_eq!(client.get_admin(), admin_c);
+        assert_eq!(client.get_role(&admin_a), Role::None);
+        assert_eq!(client.get_role(&admin_b), Role::None);
+        assert_eq!(client.get_role(&admin_c), Role::Admin);
+    }
+
+    #[test]
+    fn test_transfer_admin_to_clean_address_succeeds() {
+        // Transfer to an address with no prior role must succeed
+        let (env, admin, client) = setup();
+        let new_admin = Address::generate(&env);
+        assert_eq!(client.get_role(&new_admin), Role::None);
+        assert!(client.try_transfer_admin(&admin, &new_admin).is_ok());
+    }
+
+    // ── get_admin ─────────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_get_admin_before_init_returns_not_initialized() {
+        let (_, client) = deploy_uninit();
+        let result = client.try_get_admin();
+        assert_eq!(result.unwrap_err().unwrap(), KoraError::NotInitialized);
+    }
+
+    #[test]
+    fn test_get_admin_returns_correct_address() {
+        let (_, admin, client) = setup();
+        assert_eq!(client.get_admin(), admin);
+    }
+
+    // ── get_role ──────────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_get_role_unknown_address_returns_none() {
+        let (env, _, client) = setup();
+        let unknown = Address::generate(&env);
+        assert_eq!(client.get_role(&unknown), Role::None);
+    }
+
+    #[test]
+    fn test_get_role_admin_returns_admin() {
+        let (_, admin, client) = setup();
+        assert_eq!(client.get_role(&admin), Role::Admin);
+    }
+
+    // ── is_paused ─────────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_is_paused_default_false() {
+        let (_, _, client) = setup();
+        assert!(!client.is_paused());
+    }
+
+    #[test]
+    fn test_is_paused_reflects_state_correctly() {
+        let (_, admin, client) = setup();
+        assert!(!client.is_paused());
+        client.pause(&admin);
+        assert!(client.is_paused());
+        client.unpause(&admin);
+        assert!(!client.is_paused());
+    }
+
+    // ── cross-function interaction ────────────────────────────────────────────
+
+    #[test]
+    fn test_revoke_role_then_transfer_admin_to_that_address_succeeds() {
+        // After revoking a role, the address is clean and can receive admin
+        let (env, admin, client) = setup();
+        let user = Address::generate(&env);
+        client.grant_role(&admin, &user, &Role::Operator);
+        client.revoke_role(&admin, &user);
+        assert_eq!(client.get_role(&user), Role::None);
+        assert!(client.try_transfer_admin(&admin, &user).is_ok());
+        assert_eq!(client.get_admin(), user);
+    }
+
+    #[test]
+    fn test_pause_does_not_affect_role_state() {
+        let (env, admin, client) = setup();
+        let verifier = Address::generate(&env);
+        client.grant_role(&admin, &verifier, &Role::Verifier);
+        client.pause(&admin);
+        // Roles are unaffected by pause state
+        assert_eq!(client.get_role(&verifier), Role::Verifier);
+        assert_eq!(client.get_role(&admin), Role::Admin);
+    }
+
+    #[test]
+    fn test_grant_and_revoke_do_not_affect_pause_state() {
+        let (env, admin, client) = setup();
+        let user = Address::generate(&env);
+        client.pause(&admin);
+        client.grant_role(&admin, &user, &Role::Verifier);
+        assert!(client.is_paused()); // pause state unchanged
+        client.revoke_role(&admin, &user);
+        assert!(client.is_paused()); // still paused
+    }
+}
