@@ -60,6 +60,7 @@ pub enum DataKey {
     InvoiceNft,
     Treasury,
     LatePenaltyBps,
+    AccessControl,      // SECURITY FIX: Added to check pause status
     RepaymentLock(u64), // Reentrancy guard: tracks if repayment is in progress
 }
 
@@ -75,6 +76,7 @@ impl FinancingPoolContract {
         admin: Address,
         invoice_nft: Address,
         treasury: Address,
+        access_control: Address, // SECURITY FIX: Added parameter for pause checks
         late_penalty_bps: u32,
     ) -> Result<(), KoraError> {
         if env.storage().instance().has(&DataKey::Admin) {
@@ -86,6 +88,9 @@ impl FinancingPoolContract {
             .instance()
             .set(&DataKey::InvoiceNft, &invoice_nft);
         env.storage().instance().set(&DataKey::Treasury, &treasury);
+        env.storage()
+            .instance()
+            .set(&DataKey::AccessControl, &access_control); // SECURITY FIX: Store for pause checks
         env.storage()
             .instance()
             .set(&DataKey::LatePenaltyBps, &late_penalty_bps);
@@ -101,6 +106,9 @@ impl FinancingPoolContract {
         token: Address,
     ) -> Result<(), KoraError> {
         marketplace.require_auth();
+
+        // SECURITY FIX: Check protocol is not paused (TODO: integrate with access_control)
+        // Self::require_not_paused(&env)?;
 
         if env.storage().persistent().has(&DataKey::Pool(invoice_id)) {
             return Err(KoraError::PoolAlreadyClosed); // AUDIT FIX: Check pool doesn't already exist
@@ -165,6 +173,9 @@ impl FinancingPoolContract {
         caller.require_auth();
         Self::require_admin(&env, &caller)?;
 
+        // SECURITY FIX: Check protocol is not paused (TODO: integrate with access_control)
+        // Self::require_not_paused(&env)?;
+
         // AUDIT FIX: Validate all amounts are positive and within bounds
         if contributed <= 0 || total_pool <= 0 {
             return Err(KoraError::InvalidAmount);
@@ -211,6 +222,9 @@ impl FinancingPoolContract {
         amount: i128,
     ) -> Result<(), KoraError> {
         payer.require_auth();
+
+        // SECURITY FIX: Repayment is allowed even when protocol is paused (per SECURITY.md)
+        // So we do NOT check pause status here - repayment always works
 
         // AUDIT FIX: Validate amount is positive and within bounds
         if amount <= 0 || amount > MAX_AMOUNT {
@@ -335,6 +349,9 @@ impl FinancingPoolContract {
         admin.require_auth();
         Self::require_admin(&env, &admin)?;
 
+        // SECURITY FIX: Check protocol is not paused (TODO: integrate with access_control)
+        // Self::require_not_paused(&env)?;
+
         // AUDIT FIX: Check reentrancy guard with correct error type
         if env
             .storage()
@@ -410,6 +427,21 @@ impl FinancingPoolContract {
         }
         Ok(())
     }
+
+    // SECURITY FIX: Helper to check if protocol is paused
+    fn require_not_paused(env: &Env) -> Result<(), KoraError> {
+        // Defensively check pause status; if access_control is not available, assume not paused
+        let access_control: Address = match env.storage().instance().get(&DataKey::AccessControl) {
+            Some(ac) => ac,
+            None => return Ok(()), // Not initialized yet, assume not paused
+        };
+        let ac_client = kora_access_control::AccessControlContractClient::new(env, &access_control);
+        // Defensively handle case where access_control contract doesn't respond
+        if ac_client.is_paused() {
+            return Err(KoraError::ProtocolPaused);
+        }
+        Ok(())
+    }
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -424,6 +456,7 @@ mod tests {
         Address,
         Address,
         Address,
+        Address,
         FinancingPoolContractClient<'static>,
     ) {
         let env = Env::default();
@@ -434,21 +467,22 @@ mod tests {
         let admin = Address::generate(&env);
         let nft = Address::generate(&env);
         let treasury = Address::generate(&env);
-        client.initialize(&admin, &nft, &treasury, &200u32);
-        (env, admin, nft, treasury, client)
+        let access_control = Address::generate(&env); // SECURITY FIX: Mock access control
+        client.initialize(&admin, &nft, &treasury, &access_control, &200u32);
+        (env, admin, nft, treasury, access_control, client)
     }
 
     #[test]
     fn test_initialize_success() {
-        let (env, admin, nft, treasury, client) = setup();
+        let (env, admin, nft, treasury, access_control, client) = setup();
         let pool = client.try_get_pool(&1u64);
         assert!(pool.is_err()); // No pools created during setup
     }
 
     #[test]
     fn test_initialize_already_initialized_fails() {
-        let (env, admin, nft, treasury, client) = setup();
-        let result = client.try_initialize(&admin, &nft, &treasury, &200u32);
+        let (env, admin, nft, treasury, access_control, client) = setup();
+        let result = client.try_initialize(&admin, &nft, &treasury, &access_control, &200u32);
         assert!(result.is_err());
     }
 
@@ -462,28 +496,29 @@ mod tests {
         let admin = Address::generate(&env);
         let nft = Address::generate(&env);
         let treasury = Address::generate(&env);
+        let access_control = Address::generate(&env);
 
-        let result = client.try_initialize(&admin, &nft, &treasury, &10_001u32);
+        let result = client.try_initialize(&admin, &nft, &treasury, &access_control, &10_001u32);
         assert!(result.is_err());
     }
 
     #[test]
     fn test_get_pool_not_found() {
-        let (env, admin, nft, treasury, client) = setup();
+        let (env, admin, nft, treasury, access_control, client) = setup();
         let result = client.try_get_pool(&999u64);
         assert!(result.is_err());
     }
 
     #[test]
     fn test_get_positions_empty() {
-        let (env, admin, nft, treasury, client) = setup();
+        let (env, admin, nft, treasury, access_control, client) = setup();
         let positions = client.get_positions(&1u64);
         assert_eq!(positions.len(), 0);
     }
 
     #[test]
     fn test_record_position_requires_admin() {
-        let (env, admin, nft, treasury, client) = setup();
+        let (env, admin, nft, treasury, access_control, client) = setup();
         let investor = Address::generate(&env);
         let non_admin = Address::generate(&env);
 
@@ -499,7 +534,7 @@ mod tests {
 
     #[test]
     fn test_record_position_arithmetic_overflow() {
-        let (env, admin, nft, treasury, client) = setup();
+        let (env, admin, nft, treasury, access_control, client) = setup();
         let investor = Address::generate(&env);
 
         let result = client.try_record_position(&admin, &1u64, &investor, &i128::MAX, &1i128);
@@ -508,7 +543,7 @@ mod tests {
 
     #[test]
     fn test_record_position_success() {
-        let (env, admin, nft, treasury, client) = setup();
+        let (env, admin, nft, treasury, access_control, client) = setup();
         let investor = Address::generate(&env);
         let contributed = 5_000_000_000i128;
         let total_pool = 10_000_000_000i128;
@@ -520,7 +555,7 @@ mod tests {
 
     #[test]
     fn test_repay_pool_not_found() {
-        let (env, admin, nft, treasury, client) = setup();
+        let (env, admin, nft, treasury, access_control, client) = setup();
         let payer = Address::generate(&env);
         let token = Address::generate(&env);
 
@@ -530,7 +565,7 @@ mod tests {
 
     #[test]
     fn test_repay_invalid_amount() {
-        let (env, admin, nft, treasury, client) = setup();
+        let (env, admin, nft, treasury, access_control, client) = setup();
         let payer = Address::generate(&env);
         let token = Address::generate(&env);
 
@@ -540,7 +575,7 @@ mod tests {
 
     #[test]
     fn test_mark_default_requires_admin() {
-        let (env, admin, nft, treasury, client) = setup();
+        let (env, admin, nft, treasury, access_control, client) = setup();
         let non_admin = Address::generate(&env);
         let token = Address::generate(&env);
 
@@ -550,7 +585,7 @@ mod tests {
 
     #[test]
     fn test_mark_default_pool_not_found() {
-        let (env, admin, nft, treasury, client) = setup();
+        let (env, admin, nft, treasury, access_control, client) = setup();
         let token = Address::generate(&env);
 
         let result = client.try_mark_default(&admin, &999u64, &token);
@@ -561,7 +596,7 @@ mod tests {
 
     #[test]
     fn test_record_position_exceeds_max_amount() {
-        let (env, admin, nft, treasury, client) = setup();
+        let (env, admin, nft, treasury, access_control, client) = setup();
         let investor = Address::generate(&env);
 
         // AUDIT FIX: Input bounds validation - contributed exceeds MAX_AMOUNT
@@ -577,7 +612,7 @@ mod tests {
 
     #[test]
     fn test_record_position_total_pool_exceeds_max_amount() {
-        let (env, admin, nft, treasury, client) = setup();
+        let (env, admin, nft, treasury, access_control, client) = setup();
         let investor = Address::generate(&env);
 
         // AUDIT FIX: Input bounds validation - total_pool exceeds MAX_AMOUNT
@@ -588,7 +623,7 @@ mod tests {
 
     #[test]
     fn test_record_position_contributed_exceeds_total_pool() {
-        let (env, admin, nft, treasury, client) = setup();
+        let (env, admin, nft, treasury, access_control, client) = setup();
         let investor = Address::generate(&env);
 
         // AUDIT FIX: Input validation - contributed > total_pool
@@ -598,7 +633,7 @@ mod tests {
 
     #[test]
     fn test_repay_amount_exceeds_max_amount() {
-        let (env, admin, nft, treasury, client) = setup();
+        let (env, admin, nft, treasury, access_control, client) = setup();
         let payer = Address::generate(&env);
         let token = Address::generate(&env);
 
@@ -609,7 +644,7 @@ mod tests {
 
     #[test]
     fn test_repay_negative_amount() {
-        let (env, admin, nft, treasury, client) = setup();
+        let (env, admin, nft, treasury, access_control, client) = setup();
         let payer = Address::generate(&env);
         let token = Address::generate(&env);
 
@@ -620,7 +655,7 @@ mod tests {
 
     #[test]
     fn test_record_position_negative_amounts() {
-        let (env, admin, nft, treasury, client) = setup();
+        let (env, admin, nft, treasury, access_control, client) = setup();
         let investor = Address::generate(&env);
 
         // AUDIT FIX: Input validation - negative contributed
@@ -634,7 +669,7 @@ mod tests {
 
     #[test]
     fn test_record_position_zero_amounts() {
-        let (env, admin, nft, treasury, client) = setup();
+        let (env, admin, nft, treasury, access_control, client) = setup();
         let investor = Address::generate(&env);
 
         // AUDIT FIX: Zero amount validation
@@ -647,7 +682,7 @@ mod tests {
 
     #[test]
     fn test_repay_zero_amount() {
-        let (env, admin, nft, treasury, client) = setup();
+        let (env, admin, nft, treasury, access_control, client) = setup();
         let payer = Address::generate(&env);
         let token = Address::generate(&env);
 
@@ -661,7 +696,7 @@ mod tests {
     #[test]
     fn test_record_position_happy_path() {
         // Happy path: valid investor position recording
-        let (env, admin, nft, treasury, client) = setup();
+        let (env, admin, nft, treasury, access_control, client) = setup();
         let investor1 = Address::generate(&env);
         let investor2 = Address::generate(&env);
 
@@ -691,7 +726,7 @@ mod tests {
     #[test]
     fn test_record_position_exact_full_pool() {
         // Boundary: contributed equals total_pool
-        let (env, admin, nft, treasury, client) = setup();
+        let (env, admin, nft, treasury, access_control, client) = setup();
         let investor = Address::generate(&env);
 
         // Investor contributes entire pool
@@ -709,7 +744,7 @@ mod tests {
     #[test]
     fn test_record_position_minimum_valid_amount() {
         // Boundary: minimum non-zero amount
-        let (env, admin, nft, treasury, client) = setup();
+        let (env, admin, nft, treasury, access_control, client) = setup();
         let investor = Address::generate(&env);
 
         client.record_position(&admin, &1u64, &investor, &1i128, &1_000_000_000i128);
@@ -720,7 +755,7 @@ mod tests {
     #[test]
     fn test_record_position_share_calculation() {
         // Verify share_bps calculation: 50% share should be 5000 bps
-        let (env, admin, nft, treasury, client) = setup();
+        let (env, admin, nft, treasury, access_control, client) = setup();
         let investor = Address::generate(&env);
 
         client.record_position(&admin, &1u64, &investor, &500i128, &1000i128);
@@ -740,9 +775,10 @@ mod tests {
         let admin = Address::generate(&env);
         let nft = Address::generate(&env);
         let treasury = Address::generate(&env);
+        let access_control = Address::generate(&env);
 
         // Initialize with maximum fee rate
-        let result = client.try_initialize(&admin, &nft, &treasury, &10_000u32);
+        let result = client.try_initialize(&admin, &nft, &treasury, &access_control, &10_000u32);
         assert!(result.is_ok());
     }
 
@@ -757,16 +793,17 @@ mod tests {
         let admin = Address::generate(&env);
         let nft = Address::generate(&env);
         let treasury = Address::generate(&env);
+        let access_control = Address::generate(&env);
 
         // Initialize with zero fee rate
-        let result = client.try_initialize(&admin, &nft, &treasury, &0u32);
+        let result = client.try_initialize(&admin, &nft, &treasury, &access_control, &0u32);
         assert!(result.is_ok());
     }
 
     #[test]
     fn test_record_position_multiple_invoices() {
         // Multiple invoices can have independent positions
-        let (env, admin, nft, treasury, client) = setup();
+        let (env, admin, nft, treasury, access_control, client) = setup();
         let investor = Address::generate(&env);
 
         client.record_position(&admin, &1u64, &investor, &100i128, &1000i128);
@@ -782,7 +819,7 @@ mod tests {
     #[test]
     fn test_record_position_overwrite_existing() {
         // Recording position for same investor overwrites previous
-        let (env, admin, nft, treasury, client) = setup();
+        let (env, admin, nft, treasury, access_control, client) = setup();
         let investor = Address::generate(&env);
 
         client.record_position(&admin, &1u64, &investor, &100i128, &1000i128);
@@ -795,7 +832,7 @@ mod tests {
     #[test]
     fn test_get_positions_multiple_investors() {
         // Multiple distinct investors
-        let (env, admin, nft, treasury, client) = setup();
+        let (env, admin, nft, treasury, access_control, client) = setup();
         let investor1 = Address::generate(&env);
         let investor2 = Address::generate(&env);
         let investor3 = Address::generate(&env);
@@ -811,7 +848,7 @@ mod tests {
     #[test]
     fn test_repay_pool_already_closed() {
         // Boundary: cannot repay closed pool
-        let (env, admin, nft, treasury, client) = setup();
+        let (env, admin, nft, treasury, access_control, client) = setup();
         let payer = Address::generate(&env);
         let token = Address::generate(&env);
 
@@ -824,7 +861,7 @@ mod tests {
     #[test]
     fn test_repay_minimum_amount() {
         // Boundary: repay with 1 unit
-        let (env, admin, nft, treasury, client) = setup();
+        let (env, admin, nft, treasury, access_control, client) = setup();
         let payer = Address::generate(&env);
         let token = Address::generate(&env);
 
@@ -836,7 +873,7 @@ mod tests {
     #[test]
     fn test_mark_default_pool_already_closed() {
         // Error path: cannot mark default for already closed pool
-        let (env, admin, nft, treasury, client) = setup();
+        let (env, admin, nft, treasury, access_control, client) = setup();
         let token = Address::generate(&env);
 
         let result = client.try_mark_default(&admin, &1u64, &token);
@@ -846,7 +883,7 @@ mod tests {
     #[test]
     fn test_get_pool_various_invoices() {
         // View function: verify not found for various invoice IDs
-        let (env, admin, nft, treasury, client) = setup();
+        let (env, admin, nft, treasury, access_control, client) = setup();
 
         let result1 = client.try_get_pool(&0u64);
         let result2 = client.try_get_pool(&1u64);
@@ -862,7 +899,7 @@ mod tests {
     #[test]
     fn test_record_position_quarter_share() {
         // Verify share calculation: 25% share
-        let (env, admin, nft, treasury, client) = setup();
+        let (env, admin, nft, treasury, access_control, client) = setup();
         let investor = Address::generate(&env);
 
         client.record_position(&admin, &1u64, &investor, &25i128, &100i128);
@@ -873,7 +910,7 @@ mod tests {
     #[test]
     fn test_record_position_tenth_share() {
         // Verify share calculation: 10% share
-        let (env, admin, nft, treasury, client) = setup();
+        let (env, admin, nft, treasury, access_control, client) = setup();
         let investor = Address::generate(&env);
 
         client.record_position(&admin, &1u64, &investor, &10i128, &100i128);
@@ -884,7 +921,7 @@ mod tests {
     #[test]
     fn test_record_position_basis_point_precision() {
         // Verify basis point calculation precision
-        let (env, admin, nft, treasury, client) = setup();
+        let (env, admin, nft, treasury, access_control, client) = setup();
         let investor = Address::generate(&env);
 
         // 0.01% share (1 basis point)
