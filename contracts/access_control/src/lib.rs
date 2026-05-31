@@ -16,6 +16,8 @@ pub enum DataKey {
     Role(Address),
 }
 
+// ── Role enum ─────────────────────────────────────────────────────────────────
+
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Role {
@@ -60,6 +62,7 @@ impl AccessControlContract {
         {
             return Err(KoraError::AlreadyPaused);
         }
+        let _guard = ReentrancyGuard::new(&env)?;
         env.storage().instance().set(&DataKey::Paused, &true);
         events::protocol_paused(&env, &admin);
         Ok(())
@@ -77,6 +80,7 @@ impl AccessControlContract {
         {
             return Err(KoraError::NotPaused);
         }
+        let _guard = ReentrancyGuard::new(&env)?;
         env.storage().instance().set(&DataKey::Paused, &false);
         events::protocol_unpaused(&env, &admin);
         Ok(())
@@ -139,6 +143,8 @@ impl AccessControlContract {
         Ok(())
     }
 
+    // ── Admin transfer ────────────────────────────────────────────────────────
+
     /// Transfer admin to a new address. Current admin must sign.
     /// - Cannot transfer to self.
     /// - Cannot transfer to an address that already holds a non-None role
@@ -180,10 +186,15 @@ impl AccessControlContract {
 
     // ── Views ─────────────────────────────────────────────────────────────────
 
+    /// Returns `true` if the protocol is currently paused.
     pub fn is_paused(env: Env) -> bool {
-        env.storage().instance().get(&DataKey::Paused).unwrap_or(false)
+        env.storage()
+            .instance()
+            .get(&DataKey::Paused)
+            .unwrap_or(false)
     }
 
+    /// Returns the role assigned to `address`, or `Role::None` if unassigned.
     pub fn get_role(env: Env, address: Address) -> Role {
         env.storage()
             .persistent()
@@ -191,6 +202,17 @@ impl AccessControlContract {
             .unwrap_or(Role::None)
     }
 
+    /// Returns `true` if `address` holds the given `role`.
+    pub fn has_role(env: Env, address: Address, role: Role) -> bool {
+        let assigned: Role = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Role(address))
+            .unwrap_or(Role::None);
+        assigned == role
+    }
+
+    /// Returns the current admin address.
     pub fn get_admin(env: Env) -> Result<Address, KoraError> {
         env.storage()
             .instance()
@@ -395,6 +417,7 @@ mod tests {
         assert_eq!(client.get_role(&operator), Role::Operator);
         client.revoke_role(&admin, &operator);
         assert_eq!(client.get_role(&operator), Role::None);
+        assert!(!client.has_role(&operator, &Role::Operator));
     }
 
     #[test]
@@ -1118,5 +1141,51 @@ mod tests {
         assert!(client.is_paused()); // pause state unchanged
         client.revoke_role(&admin, &user);
         assert!(client.is_paused()); // still paused
+    }
+
+    // ── Admin transfer ────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_transfer_admin() {
+        let (env, admin, client) = setup();
+        let new_admin = Address::generate(&env);
+
+        client.transfer_admin(&admin, &new_admin);
+        assert_eq!(client.get_admin(), new_admin);
+        assert_eq!(client.get_role(&new_admin), Role::Admin);
+        assert_eq!(client.get_role(&admin), Role::None);
+    }
+
+    #[test]
+    fn test_transfer_admin_self_rejected() {
+        let (_, admin, client) = setup();
+        assert!(client.try_transfer_admin(&admin, &admin).is_err());
+    }
+
+    #[test]
+    fn test_non_admin_cannot_transfer_admin() {
+        let (env, _admin, client) = setup();
+        let stranger = Address::generate(&env);
+        let new_admin = Address::generate(&env);
+        assert!(client.try_transfer_admin(&stranger, &new_admin).is_err());
+    }
+
+    // ── has_role view ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_has_role_returns_false_for_unassigned() {
+        let (env, _admin, client) = setup();
+        let user = Address::generate(&env);
+        assert!(!client.has_role(&user, &Role::Verifier));
+        assert!(!client.has_role(&user, &Role::Operator));
+    }
+
+    #[test]
+    fn test_has_role_returns_true_after_grant() {
+        let (env, admin, client) = setup();
+        let user = Address::generate(&env);
+        client.grant_role(&admin, &user, &Role::Verifier);
+        assert!(client.has_role(&user, &Role::Verifier));
+        assert!(!client.has_role(&user, &Role::Operator));
     }
 }
