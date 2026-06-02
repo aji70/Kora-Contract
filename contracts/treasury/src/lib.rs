@@ -4,7 +4,7 @@ use kora_shared::{
     errors::KoraError,
     events,
     reentrancy::ReentrancyGuard,
-    validation::{require_non_zero_amount, require_valid_fee_bps},
+    validation::require_valid_fee_bps,
 };
 use soroban_sdk::{contract, contractimpl, contracttype, token, Address, Env};
 
@@ -22,9 +22,7 @@ pub enum DataKey {
     FeeBps,
     /// Accumulated fees per token (informational).
     Collected(Address),
-    /// Reentrancy guard for withdrawal functions.
-    WithdrawalLock,
-    /// Whitelisted token address.
+    /// Whitelisted token flag.
     WhitelistedToken(Address),
 }
 
@@ -37,7 +35,6 @@ pub struct TreasuryContract;
 impl TreasuryContract {
     /// One-time initialization. Sets admin and protocol fee.
     pub fn initialize(env: Env, admin: Address, fee_bps: u32) -> Result<(), KoraError> {
-        // Use persistent storage consistently — same store read by require_admin
         if env.storage().persistent().has(&DataKey::Admin) {
             return Err(KoraError::AlreadyInitialized);
         }
@@ -99,7 +96,9 @@ impl TreasuryContract {
     /// No auth required — the token transfer itself is the proof of payment.
     /// The amount is validated to be > 0 to prevent no-op accounting entries.
     pub fn collect_fee(env: Env, token: Address, amount: i128) -> Result<(), KoraError> {
-        require_non_zero_amount(amount)?;
+        if amount <= 0 {
+            return Err(KoraError::InvalidAmount);
+        }
         Self::require_whitelisted_token(&env, &token)?;
 
         let key = DataKey::Collected(token.clone());
@@ -116,7 +115,7 @@ impl TreasuryContract {
     }
 
     /// Withdraw accumulated fees to a recipient. Admin only.
-    /// Protected against reentrancy via an instance-storage lock key.
+    /// Protected against reentrancy via RAII ReentrancyGuard.
     pub fn withdraw(
         env: Env,
         admin: Address,
@@ -127,9 +126,12 @@ impl TreasuryContract {
         // ── Checks ────────────────────────────────────────────────────────────
         admin.require_auth();
         Self::require_admin(&env, &admin)?;
-        require_non_zero_amount(amount)?;
+        if amount <= 0 {
+            return Err(KoraError::InvalidAmount);
+        }
         Self::require_whitelisted_token(&env, &token)?;
 
+        // Acquire reentrancy guard — released automatically when _guard drops
         let _guard = ReentrancyGuard::new(&env)?;
 
         let token_client = token::Client::new(&env, &token);
@@ -141,7 +143,11 @@ impl TreasuryContract {
 
         // ── Effects ───────────────────────────────────────────────────────────
         let collected_key = DataKey::Collected(token.clone());
-        if let Some(collected) = env.storage().persistent().get::<_, i128>(&collected_key) {
+        if let Some(collected) = env
+            .storage()
+            .persistent()
+            .get::<_, i128>(&collected_key)
+        {
             let new_collected = collected.saturating_sub(amount);
             env.storage().persistent().set(&collected_key, &new_collected);
             Self::bump_persistent(&env, &collected_key);
@@ -155,7 +161,7 @@ impl TreasuryContract {
     }
 
     /// Emergency drain — withdraw entire token balance. Admin only.
-    /// Protected against reentrancy via an instance-storage lock key.
+    /// Protected against reentrancy via RAII ReentrancyGuard.
     pub fn emergency_withdraw(
         env: Env,
         admin: Address,
@@ -171,6 +177,7 @@ impl TreasuryContract {
         let token_client = token::Client::new(&env, &token);
         let balance = token_client.balance(&env.current_contract_address());
 
+        // ── Interactions ──────────────────────────────────────────────────────
         if balance > 0 {
             token_client.transfer(&env.current_contract_address(), &recipient, &balance);
             events::emergency_withdrawn(&env, &admin, &token, balance);
@@ -226,9 +233,11 @@ impl TreasuryContract {
     }
 
     fn bump_persistent(env: &Env, key: &DataKey) {
-        env.storage()
-            .persistent()
-            .extend_ttl(key, PERSISTENT_LIFETIME_THRESHOLD, PERSISTENT_BUMP_AMOUNT);
+        env.storage().persistent().extend_ttl(
+            key,
+            PERSISTENT_LIFETIME_THRESHOLD,
+            PERSISTENT_BUMP_AMOUNT,
+        );
     }
 }
 
@@ -378,7 +387,6 @@ mod tests {
         env.mock_all_auths();
         let contract_id = env.register_contract(None, TreasuryContract);
         let client = TreasuryContractClient::new(&env, &contract_id);
-        // Before initialization, falls back to default 50
         assert_eq!(client.get_fee_bps(), 50);
     }
 
@@ -387,7 +395,7 @@ mod tests {
         let (env, admin, client) = setup();
         let token = Address::generate(&env);
         let recipient = Address::generate(&env);
-        // Fails due to insufficient balance — lock must be released
+        // Fails due to token not whitelisted — lock must be released
         let _ = client.try_withdraw(&admin, &token, &recipient, &1_000i128);
         // Subsequent admin operation must succeed (lock not stuck)
         assert!(client.try_set_fee_bps(&admin, &100u32).is_ok());
