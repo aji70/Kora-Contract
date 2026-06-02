@@ -11,43 +11,6 @@ pub enum GuardKey {
     Lock,
 }
 
-// ── RAII guard ────────────────────────────────────────────────────────────────
-
-/// RAII reentrancy guard. Acquires the lock on construction and releases it
-/// when dropped, ensuring the lock is always released even on early returns.
-///
-/// # Usage
-/// ```rust,ignore
-/// pub fn my_fn(env: Env) -> Result<(), KoraError> {
-///     let _guard = ReentrancyGuard::new(&env)?;
-///     // ... protected logic ...
-///     Ok(())
-/// } // lock released here automatically
-/// ```
-pub struct ReentrancyGuard<'a> {
-    env: &'a Env,
-}
-
-impl<'a> core::fmt::Debug for ReentrancyGuard<'a> {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_struct("ReentrancyGuard").finish_non_exhaustive()
-    }
-}
-
-impl<'a> ReentrancyGuard<'a> {
-    /// Acquire the lock. Returns `KoraError::Reentrancy` if already locked.
-    pub fn new(env: &'a Env) -> Result<Self, KoraError> {
-        acquire_guard(env)?;
-        Ok(Self { env })
-    }
-}
-
-impl<'a> Drop for ReentrancyGuard<'a> {
-    fn drop(&mut self) {
-        release_guard(self.env);
-    }
-}
-
 // ── Low-level helpers ─────────────────────────────────────────────────────────
 
 /// Acquire the reentrancy lock.
@@ -141,12 +104,10 @@ mod tests {
 
         fn protected(env: &Env) -> Result<(), KoraError> {
             let _guard = ReentrancyGuard::new(env)?;
-            // Simulate early return via ?
             Err(KoraError::InvalidAmount)
         }
 
         let _ = protected(&env);
-        // Lock must be released even after early return
         assert!(!is_locked(&env));
     }
 
@@ -194,7 +155,6 @@ mod tests {
     fn test_raii_nested_guard_fails() {
         let env = Env::default();
         let _guard = ReentrancyGuard::new(&env).unwrap();
-        // Second guard must fail while first is held
         let result = ReentrancyGuard::new(&env);
         assert_eq!(result.unwrap_err(), KoraError::Reentrancy);
         // First guard drops here, lock released
