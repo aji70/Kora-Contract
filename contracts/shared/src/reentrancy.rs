@@ -57,7 +57,7 @@ mod tests {
         let env = Env::default();
         acquire_guard(&env).unwrap();
         let result = acquire_guard(&env);
-        assert_eq!(result.unwrap_err(), KoraError::Reentrancy);
+        assert_eq!(result.err().unwrap(), KoraError::Reentrancy);
         release_guard(&env);
     }
 
@@ -84,7 +84,7 @@ mod tests {
     fn test_double_acquire_returns_reentrancy_error() {
         let env = Env::default();
         acquire_guard(&env).unwrap();
-        let err = acquire_guard(&env).unwrap_err();
+        let err = acquire_guard(&env).err().unwrap();
         assert_eq!(err, KoraError::Reentrancy);
         release_guard(&env);
     }
@@ -156,7 +156,7 @@ mod tests {
         let env = Env::default();
         let _guard = ReentrancyGuard::new(&env).unwrap();
         let result = ReentrancyGuard::new(&env);
-        assert_eq!(result.unwrap_err(), KoraError::Reentrancy);
+        assert_eq!(result.err().unwrap(), KoraError::Reentrancy);
         // First guard drops here, lock released
     }
 }

@@ -139,11 +139,7 @@ pub fn fee_rate_updated(env: &Env, by: &Address, old_bps: u32, new_bps: u32) {
 
 /// Emitted when the treasury contract is initialized.
 pub fn treasury_initialized(env: &Env, admin: &Address, fee_bps: u32) {
-    emit(
-        env,
-        symbol_short!("TRES_INI"),
-        (admin.clone(), fee_bps),
-    );
+    emit(env, symbol_short!("TRES_INI"), (admin.clone(), fee_bps));
 }
 
 // ── Protocol / Admin Events ───────────────────────────────────────────────────
@@ -257,7 +253,12 @@ pub fn debtor_score_set(env: &Env, verifier: &Address, debtor_hash: &Bytes, scor
     emit(
         env,
         symbol_short!("DBT_SCR"),
-        (verifier.clone(), debtor_hash.clone(), score, env.ledger().timestamp()),
+        (
+            verifier.clone(),
+            debtor_hash.clone(),
+            score,
+            env.ledger().timestamp(),
+        ),
     );
 }
 

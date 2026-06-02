@@ -1109,7 +1109,6 @@ mod tests_extended {
 
     // ── get_admin ─────────────────────────────────────────────────────────────
 
-
     #[test]
     fn test_pause_before_init_returns_not_initialized() {
         let (env, client) = deploy_uninit();
@@ -1148,7 +1147,9 @@ mod tests_extended {
     #[test]
     fn test_get_role_falls_back_to_admin_when_role_key_missing() {
         let (env, admin, client) = setup();
-        env.storage().persistent().remove(&DataKey::Role(admin.clone()));
+        env.storage()
+            .persistent()
+            .remove(&DataKey::Role(admin.clone()));
         assert_eq!(client.get_role(&admin), Role::Admin);
     }
 
