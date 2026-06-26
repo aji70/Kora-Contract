@@ -316,3 +316,42 @@ pub fn registry_initialized(env: &Env, admin: &Address, invoice_nft: &Address) {
 }
 
 // AUDIT FIX: Removed duplicate sme_invoice_counted — use sme_invoice_count_incremented instead.
+
+// ── Multisig Events ──────────────────────────────────────────────────────────
+
+pub fn multisig_configured(env: &Env, threshold: u32, signer_count: u32) {
+    emit(
+        env,
+        symbol_short!("MS_CFG"),
+        (threshold, signer_count, env.ledger().timestamp()),
+    );
+}
+
+pub fn action_proposed(env: &Env, proposal_id: u64, proposer: &Address) {
+    emit(
+        env,
+        symbol_short!("MS_PROP"),
+        (proposal_id, proposer.clone(), env.ledger().timestamp()),
+    );
+}
+
+pub fn action_approved(env: &Env, proposal_id: u64, approver: &Address, approval_count: u32) {
+    emit(
+        env,
+        symbol_short!("MS_APPR"),
+        (
+            proposal_id,
+            approver.clone(),
+            approval_count,
+            env.ledger().timestamp(),
+        ),
+    );
+}
+
+pub fn action_executed(env: &Env, proposal_id: u64, executor: &Address) {
+    emit(
+        env,
+        symbol_short!("MS_EXEC"),
+        (proposal_id, executor.clone(), env.ledger().timestamp()),
+    );
+}

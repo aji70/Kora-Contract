@@ -1,4 +1,4 @@
-use soroban_sdk::{contracttype, Address, Bytes, String, Symbol};
+use soroban_sdk::{contracttype, Address, Bytes, String, Symbol, Vec};
 
 /// Invoice lifecycle status
 #[contracttype]
@@ -117,4 +117,36 @@ pub struct SmeProfile {
     pub total_invoices: u32,
     pub defaults: u32,
     pub registered_at: u64,
+}
+
+/// Action types that can be proposed for multisig execution
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum AdminAction {
+    Pause,
+    Unpause,
+    GrantRole(Address, u32),
+    RevokeRole(Address),
+    TransferAdmin(Address),
+}
+
+/// A multisig proposal awaiting approval
+#[contracttype]
+#[derive(Clone, Debug)]
+pub struct Proposal {
+    pub id: u64,
+    pub action: AdminAction,
+    pub proposer: Address,
+    pub approvals: Vec<Address>,
+    pub executed: bool,
+    pub created_at: u64,
+    pub expires_at: u64,
+}
+
+/// Multisig configuration
+#[contracttype]
+#[derive(Clone, Debug)]
+pub struct MultisigConfig {
+    pub threshold: u32,
+    pub signers: Vec<Address>,
 }
