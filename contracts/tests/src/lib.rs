@@ -67,7 +67,7 @@ mod integration {
         ac.initialize(&admin);
         nft.initialize(&admin, &ac_id);
         mp.initialize(&admin, &nft_id, &pool_id, &treasury_id, &50u32);
-        pool.initialize(&admin, &nft_id, &treasury_id, &200u32);
+        pool.initialize(&admin, &nft_id, &rr_id, &treasury_id, &200u32);
         treasury.initialize(&admin, &50u32);
         rr.initialize(&admin);
 
@@ -399,5 +399,154 @@ mod integration {
         assert_eq!(id2, 2);
         assert_eq!(id3, 3);
         assert_eq!(k.invoice_nft.next_id(), 4);
+    }
+
+    /// End-to-end default scenario with partial recovery:
+    /// two investors fully fund an invoice, the SME partially repays,
+    /// the due date passes, admin calls mark_default, and each investor
+    /// receives their proportional share of the recovered amount.
+    /// The invoice ends as Defaulted and the SME's risk_registry default
+    /// count is incremented automatically.
+    #[test]
+    fn test_multi_investor_partial_recovery_default_end_to_end() {
+        use soroban_sdk::token::{Client as TokenClient, StellarAssetClient};
+
+        let k = deploy_protocol();
+
+        // ── Setup: register SME in risk registry ─────────────────────────────
+        let verifier = Address::generate(&k.env);
+        let sme = Address::generate(&k.env);
+        k.risk_registry.add_verifier(&k.admin, &verifier);
+        k.risk_registry.register_sme(&verifier, &sme, &40u32);
+
+        let profile_before = k.risk_registry.get_sme_profile(&sme);
+        assert_eq!(profile_before.defaults, 0);
+
+        // ── Deploy a mock token ───────────────────────────────────────────────
+        let token_id = k.env.register_stellar_asset_contract_v2(k.admin.clone());
+        let token_addr = token_id.address();
+        let token = TokenClient::new(&k.env, &token_addr);
+        let token_admin = StellarAssetClient::new(&k.env, &token_addr);
+
+        // Whitelist the token in the marketplace
+        k.marketplace.whitelist_token(&k.admin, &token_addr);
+
+        // ── Two investors ─────────────────────────────────────────────────────
+        let investor_a = Address::generate(&k.env);
+        let investor_b = Address::generate(&k.env);
+
+        // Face value = 10,000 USDC (7 decimals); asking price = 9,500 (5% discount)
+        let face_value: i128 = 10_000_0000000; // 10,000 units
+        let asking_price: i128 = 9_500_0000000; // 9,500 units
+
+        // Investor A funds 60%, Investor B funds 40% of asking price
+        let inv_a_amount: i128 = 5_700_0000000; // 60% of asking_price
+        let inv_b_amount: i128 = 3_800_0000000; // 40% of asking_price
+
+        // Mint enough tokens for both investors (fee is 50bps = 0.5%)
+        token_admin.mint(&investor_a, &(inv_a_amount * 2));
+        token_admin.mint(&investor_b, &(inv_b_amount * 2));
+
+        // ── Mint invoice ──────────────────────────────────────────────────────
+        let (debtor_hash, _, currency, due_date, ipfs_cid, risk_score) =
+            sample_invoice_params(&k.env);
+
+        let invoice_id = k.invoice_nft.mint_invoice(
+            &sme,
+            &debtor_hash,
+            &face_value,
+            &currency,
+            &due_date,
+            &ipfs_cid,
+            &risk_score,
+        );
+
+        // ── List the invoice ──────────────────────────────────────────────────
+        let funding_deadline = k.env.ledger().timestamp() + 86_400 * 30;
+        k.marketplace.list_invoice(
+            &sme,
+            &invoice_id,
+            &asking_price,
+            &face_value,
+            &token_addr,
+            &funding_deadline,
+        );
+
+        // ── Both investors fund — triggers release_funds when full ────────────
+        k.marketplace.fund_invoice(&investor_a, &invoice_id, &inv_a_amount);
+        k.marketplace.fund_invoice(&investor_b, &invoice_id, &inv_b_amount);
+
+        // Invoice should now be Funded
+        assert_eq!(
+            k.invoice_nft.get_invoice(&invoice_id).status,
+            InvoiceStatus::Funded
+        );
+
+        // ── Record investor positions in the pool ─────────────────────────────
+        // net contributions after 0.5% fee
+        let fee_bps: i128 = 50;
+        let net_a = inv_a_amount - (inv_a_amount * fee_bps / 10_000);
+        let net_b = inv_b_amount - (inv_b_amount * fee_bps / 10_000);
+        let total_net = net_a + net_b;
+
+        k.pool.record_position(&k.admin, &invoice_id, &investor_a, &net_a, &total_net);
+        k.pool.record_position(&k.admin, &invoice_id, &investor_b, &net_b, &total_net);
+
+        // ── SME partially repays (50% of face value) ──────────────────────────
+        let partial_repayment: i128 = face_value / 2; // 5,000 units
+        token_admin.mint(&sme, &partial_repayment);
+        k.pool.repay(&sme, &invoice_id, &token_addr, &partial_repayment);
+
+        // Pool should still be open (not fully repaid)
+        let pool_state = k.pool.get_pool(&invoice_id);
+        assert_eq!(pool_state.repaid_amount, partial_repayment);
+        assert!(!pool_state.is_closed);
+
+        // ── Advance ledger past due date ──────────────────────────────────────
+        k.env.ledger().set(LedgerInfo {
+            timestamp: due_date + 1,
+            protocol_version: 21,
+            sequence_number: 200,
+            network_id: Default::default(),
+            base_reserve: 10,
+            min_temp_entry_ttl: 1000,
+            min_persistent_entry_ttl: 1000,
+            max_entry_ttl: 100_000,
+        });
+
+        // Snapshot investor balances before default distribution
+        let bal_a_before = token.balance(&investor_a);
+        let bal_b_before = token.balance(&investor_b);
+
+        // ── Admin calls mark_default ──────────────────────────────────────────
+        k.pool.mark_default(&k.admin, &invoice_id, &token_addr);
+
+        // ── Assert invoice is Defaulted ───────────────────────────────────────
+        assert_eq!(
+            k.invoice_nft.get_invoice(&invoice_id).status,
+            InvoiceStatus::Defaulted
+        );
+
+        // ── Assert risk_registry default count incremented ────────────────────
+        let profile_after = k.risk_registry.get_sme_profile(&sme);
+        assert_eq!(profile_after.defaults, 1);
+
+        // ── Assert proportional payouts ───────────────────────────────────────
+        // share_bps for A = net_a * 10000 / total_net, for B the remainder
+        let share_bps_a = (net_a * 10_000 / total_net) as u32;
+        let share_bps_b = (net_b * 10_000 / total_net) as u32;
+
+        let expected_payout_a = partial_repayment * share_bps_a as i128 / 10_000;
+        let expected_payout_b = partial_repayment * share_bps_b as i128 / 10_000;
+
+        let bal_a_after = token.balance(&investor_a);
+        let bal_b_after = token.balance(&investor_b);
+
+        assert_eq!(bal_a_after - bal_a_before, expected_payout_a);
+        assert_eq!(bal_b_after - bal_b_before, expected_payout_b);
+
+        // Total distributed must not exceed what was repaid
+        let total_distributed = (bal_a_after - bal_a_before) + (bal_b_after - bal_b_before);
+        assert!(total_distributed <= partial_repayment);
     }
 }

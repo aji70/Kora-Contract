@@ -7,7 +7,6 @@ use kora_shared::{
     validation::bps_of,
 };
 use soroban_sdk::{contract, contractimpl, contracttype, token, Address, Env, Map, Vec};
-
 // ── Storage Keys ─────────────────────────────────────────────────────────────
 
 #[contracttype]
@@ -16,6 +15,7 @@ pub enum DataKey {
     Positions(u64), // Map<Address, Position>
     Admin,
     InvoiceNft,
+    RiskRegistry,
     Treasury,
     LatePenaltyBps,
     RepaymentLock(u64), // Reentrancy guard: tracks if repayment is in progress
@@ -32,6 +32,7 @@ impl FinancingPoolContract {
         env: Env,
         admin: Address,
         invoice_nft: Address,
+        risk_registry: Address,
         treasury: Address,
         late_penalty_bps: u32,
     ) -> Result<(), KoraError> {
@@ -43,6 +44,9 @@ impl FinancingPoolContract {
         env.storage()
             .instance()
             .set(&DataKey::InvoiceNft, &invoice_nft);
+        env.storage()
+            .instance()
+            .set(&DataKey::RiskRegistry, &risk_registry);
         env.storage().instance().set(&DataKey::Treasury, &treasury);
         env.storage()
             .instance()
@@ -268,6 +272,20 @@ impl FinancingPoolContract {
         nft_client.set_defaulted(&admin, &invoice_id);
 
         events::invoice_defaulted(&env, invoice_id, &admin);
+
+        // Automatically record the default against the SME in the risk registry
+        let invoice = nft_client.get_invoice(&invoice_id);
+        if let Some(rr_contract) = env
+            .storage()
+            .instance()
+            .get::<DataKey, Address>(&DataKey::RiskRegistry)
+        {
+            let rr_client =
+                kora_risk_registry::RiskRegistryContractClient::new(&env, &rr_contract);
+            // Best-effort: ignore errors if SME is not registered in risk registry
+            let _ = rr_client.try_record_default(&admin, &invoice.sme);
+        }
+
         Ok(())
     }
 
@@ -319,8 +337,9 @@ mod tests {
 
         let admin = Address::generate(&env);
         let nft = Address::generate(&env);
+        let risk_registry = Address::generate(&env);
         let treasury = Address::generate(&env);
-        client.initialize(&admin, &nft, &treasury, &200u32);
+        client.initialize(&admin, &nft, &risk_registry, &treasury, &200u32);
         (env, admin, nft, treasury, client)
     }
 
@@ -334,7 +353,8 @@ mod tests {
     #[test]
     fn test_initialize_already_initialized_fails() {
         let (env, admin, nft, treasury, client) = setup();
-        let result = client.try_initialize(&admin, &nft, &treasury, &200u32);
+        let rr = Address::generate(&env);
+        let result = client.try_initialize(&admin, &nft, &rr, &treasury, &200u32);
         assert!(result.is_err());
     }
 
@@ -347,9 +367,10 @@ mod tests {
 
         let admin = Address::generate(&env);
         let nft = Address::generate(&env);
+        let rr = Address::generate(&env);
         let treasury = Address::generate(&env);
         
-        let result = client.try_initialize(&admin, &nft, &treasury, &10_001u32);
+        let result = client.try_initialize(&admin, &nft, &rr, &treasury, &10_001u32);
         assert!(result.is_err());
     }
 
