@@ -137,11 +137,24 @@ impl MarketplaceContract {
 
         let token_client = token::Client::new(&env, &listing.token);
         let treasury: Address = env.storage().instance().get(&DataKey::Treasury).unwrap();
+        let pool_contract: Address = env.storage().instance().get(&DataKey::FinancingPool).unwrap();
+
+        // Pre-flight checks: verify investor has sufficient balance and has approved
+        // this contract to spend `amount` before any state mutation occurs.
+        // Soroban's token::transfer panics on failure so we must guard up-front to
+        // avoid an opaque panic that would leave listing accounting inconsistent.
+        let investor_balance = token_client.balance(&investor);
+        if investor_balance < amount {
+            return Err(KoraError::InsufficientFunds);
+        }
+        let allowance = token_client.allowance(&investor, &env.current_contract_address());
+        if allowance < amount {
+            return Err(KoraError::InsufficientFunds);
+        }
 
         // Transfer fee to treasury
         token_client.transfer(&investor, &treasury, &fee);
         // Transfer net to financing pool
-        let pool_contract: Address = env.storage().instance().get(&DataKey::FinancingPool).unwrap();
         token_client.transfer(&investor, &pool_contract, &net);
 
         listing.funded_amount = listing
