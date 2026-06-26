@@ -430,7 +430,8 @@ mod tests {
         let pool_id = env.register_contract(None, FinancingPoolContract);
         let pool_client = FinancingPoolContractClient::new(&env, &pool_id);
         let ac2 = Address::generate(&env);
-        pool_client.initialize(&admin, &nft_id, &treasury, &ac2, &200u32);
+        let oracle = Address::generate(&env);
+        pool_client.initialize(&admin, &nft_id, &treasury, &ac2, &200u32, &oracle);
 
         let mp_id = env.register_contract(None, MarketplaceContract);
         let mp = MarketplaceContractClient::new(&env, &mp_id);
