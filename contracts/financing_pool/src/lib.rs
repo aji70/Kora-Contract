@@ -4,7 +4,7 @@ use kora_shared::{
     errors::KoraError,
     events,
     types::{Pool, Position},
-    validation::{bps_of_normalized, UPGRADE_TIMELOCK_DELAY},
+    validation::{bps_of, bps_of_normalized, UPGRADE_TIMELOCK_DELAY},
 };
 use soroban_sdk::{contract, contractimpl, contracttype, token, Address, BytesN, Env, Map, Vec};
 
