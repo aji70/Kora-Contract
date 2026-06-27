@@ -43,3 +43,11 @@ The full enforcement matrix is verified by the integration test
 3. Asserts `ProtocolPaused` is returned for all blocked entrypoints
 4. Asserts `repay` returns `PoolNotFound` (not `ProtocolPaused`), confirming the exemption
 5. Unpauses and confirms `mint_invoice` resumes successfully
+
+---
+
+## Cross-Contract Authorization
+
+See [ARCHITECTURE.md § Cross-Contract Authorization Matrix](ARCHITECTURE.md#cross-contract-authorization-matrix) for a detailed table of all cross-contract calls in the protocol, including the authorization required for each call.
+
+Key insight: authorization is transitive. When a user calls `marketplace.fund_invoice()` with their signature, the marketplace contract calls `financing_pool.release_funds()` with its own address (`env.current_contract_address()`), which then calls `invoice_nft.set_funded()` also with the pool's address. This three-level call chain is secure because each step is verified by the callee (via `require_auth()`).
