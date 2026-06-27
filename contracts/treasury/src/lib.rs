@@ -470,4 +470,17 @@ mod tests {
         let result = client.try_initialize(&contract_id, &50u32);
         assert!(result.is_err());
     }
+
+    #[test]
+    fn test_get_balance_with_non_existent_token() {
+        // Test behavior when calling get_balance with an arbitrary unregistered address
+        // (not a valid token contract)
+        let (env, _admin, client) = setup();
+        let invalid_token = Address::generate(&env);
+
+        // get_balance should return 0 for a non-existent token
+        // (Soroban token::Client.balance() returns 0 if the account has no balance)
+        let balance = client.get_balance(&invalid_token);
+        assert_eq!(balance, 0i128, "Balance of non-existent token should be 0");
+    }
 }
