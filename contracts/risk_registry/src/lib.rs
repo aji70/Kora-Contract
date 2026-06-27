@@ -102,6 +102,7 @@ impl RiskRegistryContract {
         verifier: Address,
         sme: Address,
         risk_score: u32,
+        compliance_attested: bool,
     ) -> Result<(), KoraError> {
         verifier.require_auth();
         Self::require_verifier(&env, &verifier)?;
@@ -124,6 +125,7 @@ impl RiskRegistryContract {
             total_invoices: 0,
             defaults: 0,
             registered_at: env.ledger().timestamp(),
+            compliance_attested,
         };
 
         env.storage()
@@ -254,6 +256,14 @@ impl RiskRegistryContract {
             .persistent()
             .get::<DataKey, SmeProfile>(&DataKey::SmeProfile(sme))
             .map(|p| p.verified)
+            .unwrap_or(false)
+    }
+
+    pub fn is_compliance_attested(env: Env, sme: Address) -> bool {
+        env.storage()
+            .persistent()
+            .get::<DataKey, SmeProfile>(&DataKey::SmeProfile(sme))
+            .map(|p| p.compliance_attested)
             .unwrap_or(false)
     }
 
@@ -471,8 +481,8 @@ mod tests {
         let sme2 = Address::generate(&env);
         client.add_verifier(&admin, &v1).unwrap();
         client.add_verifier(&admin, &v2).unwrap();
-        client.register_sme(&v1, &sme1, &30u32).unwrap();
-        client.register_sme(&v2, &sme2, &60u32).unwrap();
+        client.register_sme(&v1, &sme1, &30u32, &true).unwrap();
+        client.register_sme(&v2, &sme2, &60u32, &true).unwrap();
         assert_eq!(client.get_sme_profile(&sme1).unwrap().risk_score, 30);
         assert_eq!(client.get_sme_profile(&sme2).unwrap().risk_score, 60);
         assert_eq!(client.get_sme_profile(&sme1).unwrap().verifier, v1);
@@ -487,7 +497,7 @@ mod tests {
         let verifier = Address::generate(&env);
         let sme = Address::generate(&env);
         client.add_verifier(&admin, &verifier).unwrap();
-        client.register_sme(&verifier, &sme, &35u32).unwrap();
+        client.register_sme(&verifier, &sme, &35u32, &true).unwrap();
         assert!(client.is_verified_sme(&sme));
         let profile = client.get_sme_profile(&sme).unwrap();
         assert_eq!(profile.risk_score, 35);
@@ -495,6 +505,7 @@ mod tests {
         assert_eq!(profile.total_invoices, 0);
         assert!(profile.verified);
         assert_eq!(profile.verifier, verifier);
+        assert!(profile.compliance_attested);
     }
 
     #[test]
@@ -503,7 +514,7 @@ mod tests {
         let verifier = Address::generate(&env);
         let sme = Address::generate(&env);
         client.add_verifier(&admin, &verifier).unwrap();
-        client.register_sme(&verifier, &sme, &35u32).unwrap();
+        client.register_sme(&verifier, &sme, &35u32, &true).unwrap();
         assert!(client.try_register_sme(&verifier, &sme, &50u32).is_err());
     }
 
@@ -530,10 +541,34 @@ mod tests {
         let verifier = Address::generate(&env);
         let sme = Address::generate(&env);
         client.add_verifier(&admin, &verifier).unwrap();
-        client.register_sme(&verifier, &sme, &35u32).unwrap();
-        let _ = client.try_register_sme(&verifier, &sme, &99u32);
+        client.register_sme(&verifier, &sme, &35u32, &true).unwrap();
+        let _ = client.try_register_sme(&verifier, &sme, &99u32, &true);
         let profile = client.get_sme_profile(&sme).unwrap();
         assert_eq!(profile.risk_score, 35); // unchanged
+    }
+
+    #[test]
+    fn test_register_sme_compliance_attested_true() {
+        let (env, admin, _, client) = setup();
+        let verifier = Address::generate(&env);
+        let sme = Address::generate(&env);
+        client.add_verifier(&admin, &verifier).unwrap();
+        client.register_sme(&verifier, &sme, &50u32, &true).unwrap();
+        let profile = client.get_sme_profile(&sme).unwrap();
+        assert!(profile.compliance_attested);
+        assert!(client.is_compliance_attested(&sme));
+    }
+
+    #[test]
+    fn test_register_sme_compliance_attested_false() {
+        let (env, admin, _, client) = setup();
+        let verifier = Address::generate(&env);
+        let sme = Address::generate(&env);
+        client.add_verifier(&admin, &verifier).unwrap();
+        client.register_sme(&verifier, &sme, &50u32, &false).unwrap();
+        let profile = client.get_sme_profile(&sme).unwrap();
+        assert!(!profile.compliance_attested);
+        assert!(!client.is_compliance_attested(&sme));
     }
 
     // ── update_sme_score ──────────────────────────────────────────────────────
@@ -544,7 +579,7 @@ mod tests {
         let verifier = Address::generate(&env);
         let sme = Address::generate(&env);
         client.add_verifier(&admin, &verifier).unwrap();
-        client.register_sme(&verifier, &sme, &35u32).unwrap();
+        client.register_sme(&verifier, &sme, &35u32, &true).unwrap();
         client.update_sme_score(&verifier, &sme, &50u32).unwrap();
         assert_eq!(client.get_sme_profile(&sme).unwrap().risk_score, 50);
     }
@@ -566,7 +601,7 @@ mod tests {
         let verifier = Address::generate(&env);
         let sme = Address::generate(&env);
         client.add_verifier(&admin, &verifier).unwrap();
-        client.register_sme(&verifier, &sme, &35u32).unwrap();
+        client.register_sme(&verifier, &sme, &35u32, &true).unwrap();
         assert!(client
             .try_update_sme_score(&verifier, &sme, &101u32)
             .is_err());
@@ -578,7 +613,7 @@ mod tests {
         let verifier = Address::generate(&env);
         let sme = Address::generate(&env);
         client.add_verifier(&admin, &verifier).unwrap();
-        client.register_sme(&verifier, &sme, &50u32).unwrap();
+        client.register_sme(&verifier, &sme, &50u32, &true).unwrap();
         client.update_sme_score(&verifier, &sme, &0u32).unwrap();
         assert_eq!(client.get_sme_profile(&sme).unwrap().risk_score, 0);
         client.update_sme_score(&verifier, &sme, &100u32).unwrap();
@@ -593,7 +628,7 @@ mod tests {
         let verifier = Address::generate(&env);
         let sme = Address::generate(&env);
         client.add_verifier(&admin, &verifier).unwrap();
-        client.register_sme(&verifier, &sme, &35u32).unwrap();
+        client.register_sme(&verifier, &sme, &35u32, &true).unwrap();
         assert_eq!(client.get_sme_profile(&sme).unwrap().total_invoices, 0);
         client.increment_invoice_count(&invoice_nft, &sme).unwrap();
         assert_eq!(client.get_sme_profile(&sme).unwrap().total_invoices, 1);
@@ -605,7 +640,7 @@ mod tests {
         let verifier = Address::generate(&env);
         let sme = Address::generate(&env);
         client.add_verifier(&admin, &verifier).unwrap();
-        client.register_sme(&verifier, &sme, &35u32).unwrap();
+        client.register_sme(&verifier, &sme, &35u32, &true).unwrap();
         for i in 1u32..=5 {
             client.increment_invoice_count(&invoice_nft, &sme).unwrap();
             assert_eq!(client.get_sme_profile(&sme).unwrap().total_invoices, i);
@@ -619,7 +654,7 @@ mod tests {
         let sme = Address::generate(&env);
         let stranger = Address::generate(&env);
         client.add_verifier(&admin, &verifier).unwrap();
-        client.register_sme(&verifier, &sme, &35u32).unwrap();
+        client.register_sme(&verifier, &sme, &35u32, &true).unwrap();
         assert!(client.try_increment_invoice_count(&stranger, &sme).is_err());
     }
 
@@ -640,7 +675,7 @@ mod tests {
         let verifier = Address::generate(&env);
         let sme = Address::generate(&env);
         client.add_verifier(&admin, &verifier).unwrap();
-        client.register_sme(&verifier, &sme, &35u32).unwrap();
+        client.register_sme(&verifier, &sme, &35u32, &true).unwrap();
         assert_eq!(client.get_sme_profile(&sme).unwrap().defaults, 0);
         client.record_default(&admin, &sme).unwrap();
         assert_eq!(client.get_sme_profile(&sme).unwrap().defaults, 1);
@@ -653,7 +688,7 @@ mod tests {
         let sme = Address::generate(&env);
         let stranger = Address::generate(&env);
         client.add_verifier(&admin, &verifier).unwrap();
-        client.register_sme(&verifier, &sme, &35u32).unwrap();
+        client.register_sme(&verifier, &sme, &35u32, &true).unwrap();
         assert!(client.try_record_default(&stranger, &sme).is_err());
     }
 
@@ -670,7 +705,7 @@ mod tests {
         let verifier = Address::generate(&env);
         let sme = Address::generate(&env);
         client.add_verifier(&admin, &verifier).unwrap();
-        client.register_sme(&verifier, &sme, &35u32).unwrap();
+        client.register_sme(&verifier, &sme, &35u32, &true).unwrap();
         client.record_default(&admin, &sme).unwrap();
         client.record_default(&admin, &sme).unwrap();
         client.record_default(&admin, &sme).unwrap();
@@ -773,10 +808,10 @@ mod tests {
         let verifier = Address::generate(&env);
         client.add_verifier(&admin, &verifier).unwrap();
         let sme0 = Address::generate(&env);
-        client.register_sme(&verifier, &sme0, &0u32).unwrap();
+        client.register_sme(&verifier, &sme0, &0u32, &true).unwrap();
         assert_eq!(client.get_sme_profile(&sme0).unwrap().risk_score, 0);
         let sme100 = Address::generate(&env);
-        client.register_sme(&verifier, &sme100, &100u32).unwrap();
+        client.register_sme(&verifier, &sme100, &100u32, &true).unwrap();
         assert_eq!(client.get_sme_profile(&sme100).unwrap().risk_score, 100);
         let sme_invalid = Address::generate(&env);
         assert!(client
@@ -811,7 +846,7 @@ mod tests {
         let sme = Address::generate(&env);
         client.add_verifier(&admin, &verifier).unwrap();
         let events_before = env.events().all().len();
-        client.register_sme(&verifier, &sme, &42u32).unwrap();
+        client.register_sme(&verifier, &sme, &42u32, &true).unwrap();
         assert!(env.events().all().len() > events_before);
     }
 
@@ -821,7 +856,7 @@ mod tests {
         let verifier = Address::generate(&env);
         let sme = Address::generate(&env);
         client.add_verifier(&admin, &verifier).unwrap();
-        client.register_sme(&verifier, &sme, &35u32).unwrap();
+        client.register_sme(&verifier, &sme, &35u32, &true).unwrap();
         let events_before = env.events().all().len();
         client.increment_invoice_count(&invoice_nft, &sme).unwrap();
         assert!(env.events().all().len() > events_before);
@@ -846,7 +881,7 @@ mod tests {
         let verifier = Address::generate(&env);
         let sme = Address::generate(&env);
         client.add_verifier(&admin, &verifier).unwrap();
-        client.register_sme(&verifier, &sme, &80u32).unwrap();
+        client.register_sme(&verifier, &sme, &80u32, &true).unwrap();
         client.record_default(&admin, &sme).unwrap();
         assert_eq!(client.get_sme_profile(&sme).unwrap().defaults, 1);
         client.record_default(&admin, &sme).unwrap();
