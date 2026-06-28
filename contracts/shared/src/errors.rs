@@ -64,6 +64,8 @@ pub enum KoraError {
     FieldTooLong = 95,
     // Reentrancy guard triggered
     Reentrancy = 98,
+    // Byte slice has the wrong length (e.g. debtor_hash must be exactly 32 bytes)
+    InvalidLength = 99,
     // Upgrade
     NoUpgradeProposed = 100,
     UpgradeTimelockNotElapsed = 101,
