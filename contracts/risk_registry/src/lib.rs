@@ -39,7 +39,6 @@ impl RiskRegistryContract {
             return Err(KoraError::AlreadyInitialized);
         }
         kora_shared::validation::require_not_self(&env, &admin)?;
-        env.storage().instance().set(&DataKey::Admin, &admin);
         env.storage().persistent().set(&DataKey::Admin, &admin);
         Self::bump_persistent(&env, &DataKey::Admin);
         env.storage()
@@ -862,7 +861,6 @@ mod tests {
         let contract_id = env.register_contract(None, RiskRegistryContract);
         let client = RiskRegistryContractClient::new(&env, &contract_id);
         let invoice_nft = Address::generate(&env);
-        // Passing the contract's own address as admin must be rejected.
         let result = client.try_initialize(&contract_id, &invoice_nft);
         assert!(result.is_err());
     }
