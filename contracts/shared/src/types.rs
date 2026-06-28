@@ -167,3 +167,27 @@ pub struct MultisigConfig {
     pub threshold: u32,
     pub signers: Vec<Address>,
 }
+
+/// A tunable protocol parameter governed by the parameter-change process.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ParameterKey {
+    FeeBps,         // protocol fee in basis points
+    LatePenaltyBps, // late-repayment penalty in basis points
+    MaxRiskScore,   // ceiling for accepted invoice risk scores (0–100)
+}
+
+/// A governance proposal to change a single protocol parameter.
+///
+/// Reuses the B2 multisig signer set for gating and a B1-style timelock before execution.
+#[contracttype]
+#[derive(Clone, Debug)]
+pub struct ParameterProposal {
+    pub id: u64,
+    pub key: ParameterKey,
+    pub new_value: u32,
+    pub proposer: Address,
+    pub approvals: Vec<Address>, // signers that have voted in favour
+    pub created_at: u64,
+    pub executed: bool,
+}

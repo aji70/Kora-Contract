@@ -67,4 +67,12 @@ pub enum KoraError {
     // Upgrade
     NoUpgradeProposed = 100,
     UpgradeTimelockNotElapsed = 101,
+    // Parameter governance
+    ParameterProposalNotFound = 110,
+    ParameterProposalAlreadyExecuted = 111,
+    NotMultisigSigner = 112,
+    AlreadyVoted = 113,
+    GovernanceThresholdNotMet = 114,
+    GovernanceTimelockNotElapsed = 115,
+    InvalidParameterValue = 116,
 }
