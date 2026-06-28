@@ -47,7 +47,8 @@ pub struct Invoice {
     pub currency: Symbol,   // e.g. USDC, EURC
     pub due_date: u64,      // Unix timestamp
     pub ipfs_cid: String,   // IPFS CID of full invoice metadata
-    pub risk_score: u32,    // 0–100
+    pub metadata_hash: Bytes, // SHA-256 content commitment of the off-chain metadata document (empty until committed)
+    pub risk_score: u32,      // 0–100
     pub risk_tier: RiskTier,
     pub status: InvoiceStatus,
     pub created_at: u64,
@@ -93,6 +94,20 @@ pub struct Pool {
     pub late_penalty_bps: u32,
     pub total_owed: i128,
     pub penalty_applied: bool,
+}
+
+/// An SME's early-termination buyout offer for a funded invoice.
+///
+/// The SME escrows `amount` (a discount to `total_owed`) into the pool; investors then
+/// accept, and once investors representing 100% of pool shares have accepted, the escrow
+/// is distributed pro-rata and the pool closes.
+#[contracttype]
+#[derive(Clone, Debug)]
+pub struct EarlySettlementOffer {
+    pub invoice_id: u64,
+    pub amount: i128,      // escrowed buyout amount, denominated in the pool token
+    pub accepted_bps: u32, // cumulative share_bps of investors that have accepted
+    pub accepted: Vec<Address>, // investors that have already accepted (dedup guard)
 }
 
 /// Protocol-level configuration.
@@ -151,4 +166,28 @@ pub struct Proposal {
 pub struct MultisigConfig {
     pub threshold: u32,
     pub signers: Vec<Address>,
+}
+
+/// A tunable protocol parameter governed by the parameter-change process.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ParameterKey {
+    FeeBps,         // protocol fee in basis points
+    LatePenaltyBps, // late-repayment penalty in basis points
+    MaxRiskScore,   // ceiling for accepted invoice risk scores (0–100)
+}
+
+/// A governance proposal to change a single protocol parameter.
+///
+/// Reuses the B2 multisig signer set for gating and a B1-style timelock before execution.
+#[contracttype]
+#[derive(Clone, Debug)]
+pub struct ParameterProposal {
+    pub id: u64,
+    pub key: ParameterKey,
+    pub new_value: u32,
+    pub proposer: Address,
+    pub approvals: Vec<Address>, // signers that have voted in favour
+    pub created_at: u64,
+    pub executed: bool,
 }
