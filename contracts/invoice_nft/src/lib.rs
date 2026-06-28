@@ -173,6 +173,7 @@ impl InvoiceNftContract {
             currency,
             due_date,
             ipfs_cid,
+            metadata_hash: Bytes::new(&env),
             risk_score,
             risk_tier: RiskTier::from_score(risk_score),
             status: InvoiceStatus::Created,
@@ -315,6 +316,50 @@ impl InvoiceNftContract {
     /// **Security:** This is a read-only view with no authorization check.
     pub fn get_invoice(env: Env, invoice_id: u64) -> Result<Invoice, KoraError> {
         Self::load_invoice(&env, invoice_id)
+    }
+
+    /// Commit a SHA-256 content-integrity hash of the off-chain metadata document.
+    ///
+    /// This binds the invoice on-chain to the exact bytes of the document referenced by
+    /// `ipfs_cid`, so a fetched document can be verified even if the underlying CID content
+    /// were ever mutated. Write-once: the hash can only be committed while empty and while the
+    /// invoice is still in `Created` status, after which it is immutable.
+    ///
+    /// **Parameters:**
+    /// - `sme` — The invoice owner (must match `invoice.sme`).
+    /// - `invoice_id` — The ID of the invoice to commit the hash for.
+    /// - `metadata_hash` — SHA-256 (32 bytes) of the canonical off-chain document.
+    ///
+    /// **Security:** Requires auth from the invoice's SME. Rejects empty hashes, already-committed
+    /// invoices, and invoices that have left `Created` status.
+    pub fn commit_metadata_hash(
+        env: Env,
+        sme: Address,
+        invoice_id: u64,
+        metadata_hash: Bytes,
+    ) -> Result<(), KoraError> {
+        sme.require_auth();
+        Self::require_not_paused(&env)?;
+        let _guard = ReentrancyGuard::new(&env)?;
+
+        require_non_empty_bytes(&metadata_hash)?;
+
+        let mut invoice = Self::load_invoice(&env, invoice_id)?;
+        if invoice.sme != sme {
+            return Err(KoraError::Unauthorized);
+        }
+        if invoice.status != InvoiceStatus::Created {
+            return Err(KoraError::InvalidInvoiceStatus);
+        }
+        if invoice.metadata_hash.len() != 0 {
+            return Err(KoraError::AlreadyInitialized);
+        }
+
+        invoice.metadata_hash = metadata_hash;
+        env.storage()
+            .persistent()
+            .set(&DataKey::Invoice(invoice_id), &invoice);
+        Ok(())
     }
 
     /// Get the next invoice ID that will be allocated.
